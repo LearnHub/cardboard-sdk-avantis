@@ -130,13 +130,11 @@ class CardboardInputProvider {
   }
 
   UnitySubsystemErrorCode Tick() {
-    std::array<float, 4> out_orientation;
-    std::array<float, 3> out_position;
-    cardboard_input_api_->GetHeadTrackerPose(out_position.data(),
-                                             out_orientation.data());
+    //std::array<float, 4> out_orientation;
+    //std::array<float, 3> out_position;
+    //cardboard_input_api_->GetHeadTrackerPose(out_position.data(), out_orientation.data());
     // TODO(b/151817737): Compute pose position within SDK with custom rotation.
-    head_pose_ =
-        cardboard::unity::CardboardRotationToUnityPose(out_orientation);
+    //head_pose_ = cardboard::unity::CardboardRotationToUnityPose(out_orientation);
     return kUnitySubsystemErrorCodeSuccess;
   }
 
@@ -159,21 +157,62 @@ class CardboardInputProvider {
 
     return kUnitySubsystemErrorCodeSuccess;
   }
-
-  UnitySubsystemErrorCode UpdateDeviceState(
-      UnityXRInternalInputDeviceId device_id, UnityXRInputDeviceState* state) {
-    if (device_id != kDeviceIdCardboardHmd) {
-      return kUnitySubsystemErrorCodeFailure;
+  
+    static inline int64_t GetBootTimeNano() {
+        struct timespec res;
+        // CLOCK_BOOTTIME includes suspend time and matches Android sensor timestamps
+        clock_gettime(CLOCK_BOOTTIME, &res);
+        return static_cast<int64_t>(res.tv_sec) * 1000000000LL + res.tv_nsec;
     }
 
-    UnityXRInputFeatureIndex feature_index = 0;
-    input_->DeviceState_SetAxis3DValue(state, feature_index++,
-                                       head_pose_.position);
-    input_->DeviceState_SetRotationValue(state, feature_index++,
-                                         head_pose_.rotation);
 
-    return kUnitySubsystemErrorCodeSuccess;
-  }
+    UnitySubsystemErrorCode UpdateDeviceState(
+            UnityXRInternalInputDeviceId device_id, UnityXRInputDeviceState* state) {
+
+        if (device_id != kDeviceIdCardboardHmd) {
+            return kUnitySubsystemErrorCodeFailure;
+        }
+
+        // --- Sample the latest pose possible ---
+        std::array<float, 3> out_position;
+        std::array<float, 4> out_orientation;
+
+        // Use the same prediction offset as the plugin normally does
+        constexpr int64_t kPredictionTimeWithoutVsyncNanos = 11000000; // ~11ms
+        int64_t predicted_ns = GetBootTimeNano() + kPredictionTimeWithoutVsyncNanos;
+
+        CardboardHeadTracker_getPose(
+                cardboard_input_api_->GetHeadTracker(),
+                predicted_ns,
+                kLandscapeLeft,
+                out_position.data(),
+                out_orientation.data()
+        );
+
+        // Convert orientation to Unity format
+        UnityXRPose unity_rot = cardboard::unity::CardboardRotationToUnityPose(out_orientation);
+
+        // --- Send to Unity ---
+        UnityXRVector3 unity_pos{
+                out_position[0],
+                out_position[1],
+                out_position[2]
+        };
+
+        UnityXRVector4 unity_rot1{
+                unity_rot.rotation.x,
+                unity_rot.rotation.y,
+                unity_rot.rotation.z,
+                unity_rot.rotation.w
+        };
+
+        UnityXRInputFeatureIndex feature_index = 0;
+        input_->DeviceState_SetAxis3DValue(state, feature_index++, unity_pos);
+        input_->DeviceState_SetRotationValue(state, feature_index++, unity_rot1);
+
+
+        return kUnitySubsystemErrorCodeSuccess;
+    }
 
   UnitySubsystemErrorCode QueryTrackingOriginMode(
       UnityXRInputTrackingOriginModeFlags* tracking_origin_mode) {

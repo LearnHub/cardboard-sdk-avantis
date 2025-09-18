@@ -149,32 +149,99 @@ struct DeviceGyroscopeSensor::SensorInfo {
 
 namespace {
 
-bool ParseGyroEvent(const ASensorEvent& event, GyroscopeData* sample) {
-  if (event.type == ASENSOR_TYPE_ADDITIONAL_INFO) {
-    CARDBOARD_LOGI("ParseGyroEvent discarding additional info sensor event");
-    return false;
-  }
+    // Persistent state
+    static float g_gyro_bias[3]      = {0.0f, 0.0f, 0.0f};
+    static float g_bias_smooth_alpha = 0.05f;
 
-  sample->sensor_timestamp_ns = event.timestamp;
-  sample->system_timestamp = event.timestamp;  // Clock::time_point();
-  // The event values in ASensorEvent (event, acceleration and
-  // magnetic) are all in the same union type so they can be
-  // accessed by event.
-  if (event.type == ASENSOR_TYPE_GYROSCOPE) {
-    sample->data = {event.vector.x, event.vector.y, event.vector.z};
-    return true;
-  } else if (event.type == ASENSOR_TYPE_GYROSCOPE_UNCALIBRATED) {
-    // This is a special case when it is possible to initialize to
-    // ASENSOR_TYPE_GYROSCOPE_UNCALIBRATED
-    sample->data = {event.vector.x, event.vector.y, event.vector.z};
-    return true;
-  } else {
-    CARDBOARD_LOGE("ParseGyroEvent discarding unexpected sensor event type %d",
-                   event.type);
-  }
+    static float g_gyro_smoothed[3]  = {0.0f, 0.0f, 0.0f};
+    static bool  g_has_smoothed      = false;
 
-  return false;
-}
+	// Median filter history (3 samples per axis)
+    static float g_hist_x[3] = {0}, g_hist_y[3] = {0}, g_hist_z[3] = {0};
+    static int   g_hist_idx  = 0;
+
+    static inline float median3(float a, float b, float c) {
+        if (a > b) { float t = a; a = b; b = t; }
+        if (b > c) { float t = b; b = c; c = t; }
+        if (a > b) { float t = a; a = b; b = t; }
+        return b;
+    }
+
+    bool ParseGyroEvent(const ASensorEvent& event, GyroscopeData* sample)
+    {
+        if (!sample) return false;
+
+        // Handle calibration/bias updates
+        if (event.type == ASENSOR_TYPE_ADDITIONAL_INFO)
+        {
+            if (event.additional_info.type == ASENSOR_ADDITIONAL_INFO_VEC3_CALIBRATION)
+            {
+                // Smooth bias updates
+                for (int i = 0; i < 3; ++i)
+                {
+                    float new_bias = event.additional_info.data_float[i];
+                    g_gyro_bias[i] = g_bias_smooth_alpha * new_bias + (1.0f - g_bias_smooth_alpha) * g_gyro_bias[i];
+                }
+                CARDBOARD_LOGI("Updated gyro bias: %.6f, %.6f, %.6f", g_gyro_bias[0], g_gyro_bias[1], g_gyro_bias[2]);
+            }
+            // Not a real sample
+            return false;
+        }
+
+        // Common timestamps
+        sample->sensor_timestamp_ns = event.timestamp;
+        sample->system_timestamp    = event.timestamp;
+
+        if (event.type == ASENSOR_TYPE_GYROSCOPE || event.type == ASENSOR_TYPE_GYROSCOPE_UNCALIBRATED)
+        {
+
+            // Bias‑corrected raw
+            float x = event.vector.x - g_gyro_bias[0];
+            float y = event.vector.y - g_gyro_bias[1];
+            float z = event.vector.z - g_gyro_bias[2];
+
+            // Median filter to reject spikes
+            g_hist_x[g_hist_idx] = x;
+            g_hist_y[g_hist_idx] = y;
+            g_hist_z[g_hist_idx] = z;
+            g_hist_idx = (g_hist_idx + 1) % 3;
+
+            x = median3(g_hist_x[0], g_hist_x[1], g_hist_x[2]);
+            y = median3(g_hist_y[0], g_hist_y[1], g_hist_y[2]);
+            z = median3(g_hist_z[0], g_hist_z[1], g_hist_z[2]);
+
+            // Adaptive EMA smoothing based on angular speed
+            // crude magnitude
+            float speed = fabsf(x) + fabsf(y) + fabsf(z);
+            // heavier smoothing when still
+            float alpha = (speed < 0.05f) ? 0.05f : 0.25f; 
+
+            if (!g_has_smoothed)
+            {
+                g_gyro_smoothed[0] = x;
+                g_gyro_smoothed[1] = y;
+                g_gyro_smoothed[2] = z;
+                g_has_smoothed = true;
+            }
+            else
+            {
+                g_gyro_smoothed[0] = alpha * x + (1.0f - alpha) * g_gyro_smoothed[0];
+                g_gyro_smoothed[1] = alpha * y + (1.0f - alpha) * g_gyro_smoothed[1];
+                g_gyro_smoothed[2] = alpha * z + (1.0f - alpha) * g_gyro_smoothed[2];
+            }
+
+            sample->data[0] = g_gyro_smoothed[0];
+            sample->data[1] = g_gyro_smoothed[1];
+            sample->data[2] = g_gyro_smoothed[2];
+
+            return true;
+        }
+
+        CARDBOARD_LOGE("ParseGyroEvent discarding unexpected sensor event type %d", event.type);
+        return false;
+    }
+
+
 
 }  // namespace
 
