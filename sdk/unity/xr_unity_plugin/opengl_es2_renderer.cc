@@ -210,6 +210,13 @@ class OpenGlEs2Renderer : public Renderer {
     CHECKGLERROR("Create texture depth buffer.");
     render_texture->depth_buffer = tmp;
   }
+    void CreateRenderTextureArray(RenderTexture* render_texture,
+                                          int width,
+                                          int height,
+                                          int layer_count)
+    {
+      //SPI has no support in OGL2.0
+    }
 
   void DestroyRenderTexture(RenderTexture* render_texture) override {
     GLuint tmp = static_cast<GLuint>(render_texture->depth_buffer);

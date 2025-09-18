@@ -34,6 +34,7 @@ find_library(LOG_LIB log)
 # the following line if OpenGL ES 3.0 support is not needed.
 if(CARDBOARDSDK_RENDERING_GLESv3)
     find_library(GLESv3_LIB GLESv3)
+    find_library(EGL_LIB EGL)
 endif()
 
 include_directories(.)
@@ -136,6 +137,7 @@ if(CARDBOARDSDK_RENDERING_GLESv3)
         PUBLIC
         # #Library is only needed if OpenGL ES 3.0 support is desired.
         ${GLESv3_LIB}
+        ${EGL_LIB}
     )
 endif()
 

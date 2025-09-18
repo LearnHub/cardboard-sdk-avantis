@@ -21,6 +21,7 @@
 #endif
 #include "util/logging.h"
 #include "unity/xr_unity_plugin/renderer.h"
+#include <EGL/egl.h>
 
 // @def Forwards the call to CheckGlError().
 #define CHECKGLERROR(label) CheckGlError(__FILE__, __LINE__, label)
@@ -141,16 +142,89 @@ const char kWidgetFragmentShaderOpenGlEs3[] =
   }
   )glsl";
 
+
+#include <time.h>
+#include <stdint.h>
+#include <math.h>
+
+// Monotonic clock
+static inline int64_t NowNs() {
+    timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+
+namespace hz72Limiter {
+    // State
+    static double  s_refresh_hz    = 72.0;
+    static int64_t s_vsync_ns      = (int64_t)(1000000000.0 / 72.0 + 0.5); // ~13,888,889
+    static int64_t s_last_target   = 0;   // last target deadline in ns
+    static double  s_accum_frac    = 0.0; // fractional accumulator
+
+    inline void SetRefreshHz(double hz) {
+        if (hz > 1.0 && hz < 1000.0) {
+            s_refresh_hz = hz;
+            s_vsync_ns   = (int64_t)(1000000000.0 / hz + 0.5);
+            // Don’t reset s_last_target/s_accum_frac so cadence continues smoothly.
+        }
+    }
+
+    inline void FPSLimit(double target_fps) {
+        if (target_fps <= 0.0) return;
+
+        // Convert FPS to vsyncs per frame, then alternate between floor/ceil.
+        double vsyncs_per_frame = s_refresh_hz / target_fps;
+        int    base_vs     = (int)floor(vsyncs_per_frame);
+        if (base_vs < 1) base_vs = 1;
+        double frac_vs     = vsyncs_per_frame - (double)base_vs;
+
+        int vs_this_frame = base_vs;
+        s_accum_frac += frac_vs;
+        if (s_accum_frac >= 1.0) {
+            vs_this_frame += 1;
+            s_accum_frac -= 1.0;
+        }
+
+        // First call: start from "now"
+        const int64_t now = NowNs();
+        if (s_last_target == 0) {
+            s_last_target = now;
+        }
+
+        // Target time is last target + N vsync intervals
+        const int64_t target = s_last_target + (int64_t)vs_this_frame * s_vsync_ns;
+
+        // Coarse sleep, then fine spin to hit the deadline
+        int64_t dt = target - now;
+        if (dt > 1000000) { // > 1 ms
+            timespec ts{
+                    static_cast<time_t>(dt / 1000000000LL),
+                    static_cast<long>(dt % 1000000000LL)
+            };
+            nanosleep(&ts, nullptr);
+        }
+        while ((target - NowNs()) > 0) { /* busy-wait tail for precision */ }
+
+        // Advance schedule
+        s_last_target = target;
+    }
+}
+
+static EGLDisplay g_display = EGL_NO_DISPLAY;
+static EGLSurface g_surface = EGL_NO_SURFACE;
+static EGLContext g_context = EGL_NO_CONTEXT;
+
+
 class OpenGlEs3Renderer : public Renderer {
  public:
   OpenGlEs3Renderer() = default;
   ~OpenGlEs3Renderer() { TeardownWidgets(); }
 
-  void SetupWidgets() override {
+  void SetupWidgets() override
+  {
     if (widget_program_ != 0) {
       return;
     }
-
     widget_program_ = CreateProgram(kWidgetVertexShaderOpenGlEs3,
                                     kWidgetFragmentShaderOpenGlEs3);
     widget_attrib_position_ =
@@ -187,8 +261,8 @@ class OpenGlEs3Renderer : public Renderer {
     widget_program_ = 0;
   }
 
-  void CreateRenderTexture(RenderTexture* render_texture, int screen_width,
-                           int screen_height) override {
+  void CreateRenderTexture(RenderTexture* render_texture, int screen_width, int screen_height) override
+  {
     // Create texture color buffer.
     GLuint tmp = 0;
     glGenTextures(1, &tmp);
@@ -212,6 +286,64 @@ class OpenGlEs3Renderer : public Renderer {
     render_texture->depth_buffer = tmp;
   }
 
+    void CreateRenderTextureArray(RenderTexture* render_texture, int width, int height, int layer_count)  override
+    {
+        // --- Create color buffer as a 2D array texture ---
+        GLuint tex = 0;
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, tex);
+
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+        // Allocate storage for all layers (no data upload yet)
+        glTexImage3D(GL_TEXTURE_2D_ARRAY,
+                     0,                      // mip level
+                     GL_RGB,                 // internal format
+                     width / 2,
+                     height,
+                     layer_count,            // depth = number of slices
+                     0,                      // border
+                     GL_RGB,                 // format
+                     GL_UNSIGNED_BYTE,       // type
+                     nullptr);               // no initial data
+
+        CHECKGLERROR("Create texture array color buffer.");
+        render_texture->color_buffer = tex;
+
+        // --- Create depth buffer as a layered renderbuffer ---
+        GLuint depth = 0;
+        glGenRenderbuffers(1, &depth);
+        glBindRenderbuffer(GL_RENDERBUFFER, depth);
+
+        // --- Depth: GL_TEXTURE_2D_ARRAY with 'layer_count' slices ---
+        // We can't make a "layered renderbuffer" in ES3, so we use a depth texture array.
+        GLuint depth_tex = 0;
+        glGenTextures(1, &depth_tex);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, depth_tex);
+
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+        glTexImage3D(GL_TEXTURE_2D_ARRAY,
+                     0,
+                     GL_DEPTH_COMPONENT16, // match original depth precision
+                     width,
+                     height,
+                     layer_count,
+                     0,
+                     GL_DEPTH_COMPONENT,
+                     GL_UNSIGNED_SHORT,
+                     nullptr);
+
+        CHECKGLERROR("Create texture array depth buffer.");
+        render_texture->depth_buffer = depth_tex;
+    }
+
   void DestroyRenderTexture(RenderTexture* render_texture) override {
     GLuint tmp = static_cast<GLuint>(render_texture->depth_buffer);
     glDeleteRenderbuffers(1, &tmp);
@@ -225,15 +357,18 @@ class OpenGlEs3Renderer : public Renderer {
   void RenderEyesToDisplay(
       CardboardDistortionRenderer* renderer, const ScreenParams& screen_params,
       const CardboardEyeTextureDescription* left_eye,
-      const CardboardEyeTextureDescription* right_eye) override {
-    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-    int bound_framebuffer = 0;
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &bound_framebuffer);
-    CardboardDistortionRenderer_renderEyeToDisplay(
+      const CardboardEyeTextureDescription* right_eye) override
+      {
+      hz72Limiter::FPSLimit(144.0);
+      glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+      int bound_framebuffer = 0;
+      glGetIntegerv(GL_FRAMEBUFFER_BINDING, &bound_framebuffer);
+
+      CardboardDistortionRenderer_renderEyeToDisplay(
         renderer, bound_framebuffer, screen_params.viewport_x,
         screen_params.viewport_y, screen_params.viewport_width,
         screen_params.viewport_height, left_eye, right_eye);
-  }
+      }
 
   void RunRenderingPreProcessing(
       const ScreenParams& /* screen_params */) override {

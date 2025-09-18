@@ -40,6 +40,7 @@ typedef enum CardboardEye {
   kLeft = 0,
   /// Right eye.
   kRight = 1,
+  kMax
 } CardboardEye;
 
 /// Enum to describe the possible orientations of the viewport.

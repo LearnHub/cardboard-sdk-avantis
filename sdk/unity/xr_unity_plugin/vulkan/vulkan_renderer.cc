@@ -435,6 +435,14 @@ class VulkanRenderer : public Renderer {
     render_texture->depth_buffer = 0;
   }
 
+    void CreateRenderTextureArray(RenderTexture* render_texture,
+                                  int width,
+                                  int height,
+                                  int layer_count)
+    {
+        // TODO: Only OGL3 currently
+    }
+
   void DestroyRenderTexture(RenderTexture* render_texture) override {
     render_texture->color_buffer = 0;
     render_texture->depth_buffer = 0;

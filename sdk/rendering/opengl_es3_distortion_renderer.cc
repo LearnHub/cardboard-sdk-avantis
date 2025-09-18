@@ -42,8 +42,12 @@
 
 namespace {
 
-constexpr const char* kDistortionVertexShader =
+    static std::array<GLuint, 2> upscale_tex = {0, 0};
+
+
+    constexpr const char* kDistortionVertexShader =
     R"glsl(#version 300 es
+    precision mediump float;
     layout (location = 0) in vec2 a_Position;
     layout (location = 1) in vec2 a_TexCoords;
     out vec2 v_TexCoords;
@@ -53,6 +57,7 @@ constexpr const char* kDistortionVertexShader =
       v_TexCoords = a_TexCoords;
     })glsl";
 
+    /*
 constexpr const char* kDistortionFragmentShaderTexture2D =
     R"glsl(#version 300 es
     precision mediump float;
@@ -66,6 +71,181 @@ constexpr const char* kDistortionFragmentShaderTexture2D =
     void main() {
       vec2 coords = u_Start + v_TexCoords * (u_End - u_Start);
       o_FragColor = texture(u_Texture, coords);
+    })glsl";
+     */
+
+    // Great
+    /*
+    constexpr const char* kDistortionFragmentShaderTexture2D =
+            R"glsl(#version 300 es
+    precision mediump float;
+
+    uniform sampler2DArray u_TextureArray;
+    uniform int   u_SliceIndex;
+
+    uniform vec2  u_Start;
+    uniform vec2  u_End;
+    uniform vec2  u_Scale;       // low_res_size / full_res_size
+    uniform vec2  u_TexelSize;   // 1.0 / low_res_size
+    uniform float u_Sharpen;     // 0.0..~0.35
+
+    in vec2 v_TexCoords;
+    out vec4 o_FragColor;
+
+    // Luma for edge measure (mediump is fine on Adreno 610)
+    mediump float luma(mediump vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+
+    void main() {
+        // Distortion UVs
+        mediump vec2 coords = u_Start + v_TexCoords * (u_End - u_Start);
+
+        // Skip scale if 1:1
+        if (u_Scale.x != 1.0 || u_Scale.y != 1.0) {
+            coords *= u_Scale;
+        }
+
+        // Derivatives for anisotropy and explicit LOD control
+        mediump vec2 dxc = dFdx(coords);
+        mediump vec2 dyc = dFdy(coords);
+        mediump float sx = length(dxc);
+        mediump float sy = length(dyc);
+
+        // Small dynamic LOD bias to reduce shimmer in high distortion
+        // Scale is gentle to avoid blur in the fovea.
+        mediump float aniso = max(sx, sy);
+        mediump float biasScale = 0.25;   // tune: 0.2..0.4
+        mediump float bias = clamp((aniso - 1.0) * biasScale, 0.0, 0.5);
+        mediump vec2 dxb = dxc * (1.0 + bias);
+        mediump vec2 dyb = dyc * (1.0 + bias);
+
+        // Base sample from texture array (explicit gradients to apply bias)
+        mediump vec3 c = textureGrad(u_TextureArray, vec3(coords, float(u_SliceIndex)), dxb, dyb).rgb;
+
+        // Early out if no sharpening requested
+        if (u_Sharpen <= 0.0) {
+            o_FragColor = vec4(c, 1.0);
+            return;
+        }
+
+        // Direction choice for neighbor taps (dominant gradient)
+        bool horiz = (sx >= sy);
+        mediump vec2 off = horiz ? vec2(u_TexelSize.x, 0.0) : vec2(0.0, u_TexelSize.y);
+
+        // Neighbor samples with same LOD bias (reuse dxb/dyb for coherence)
+        mediump vec3 a = textureGrad(u_TextureArray, vec3(coords + off, float(u_SliceIndex)), dxb, dyb).rgb;
+        mediump vec3 b = textureGrad(u_TextureArray, vec3(coords - off, float(u_SliceIndex)), dxb, dyb).rgb;
+
+        // Edge measure from directional neighbors to avoid halos on strong edges
+        mediump float g = abs(luma(a) - luma(b));      // directional contrast
+        mediump float edgeW = clamp(g * 2.0, 0.0, 1.0); // scale: tune 1.5..3.0
+
+        // Limited unsharp mask (2-tap variant)
+        // hf ≈ c - mean(a,b); sharpened = c + k * clamp(hf, -H, +H)
+        mediump vec3 meanAB = 0.5 * (a + b);
+        mediump vec3 hf     = c - meanAB;
+
+        // Reduce sharpening near strong edges and with higher anisotropy
+        mediump float k = u_Sharpen;
+        k *= (1.0 - 0.6 * edgeW);     // back off on edges
+        k *= (1.0 - 0.3 * clamp(aniso - 1.0, 0.0, 1.0)); // back off when derivatives stretch
+
+        // Local limiter to prevent halos/ringing
+        mediump vec3 limit = max(vec3(0.02), 0.75 * abs(c - meanAB)); // floor avoids total kill in flat areas
+        mediump vec3 boosted = c + k * clamp(hf, -limit, limit);
+
+        // Clamp to displayable range (assumes linear color; adjust if using sRGB)
+        o_FragColor = vec4(clamp(boosted, 0.0, 1.0), 1.0);
+    })glsl";
+    */
+
+    constexpr const char* kDistortionFragmentShaderTexture2D =
+            R"glsl(#version 300 es
+            precision mediump float;
+
+            uniform sampler2DArray u_TextureArray;
+            uniform int   u_SliceIndex;
+
+            uniform vec2  u_Start;
+            uniform vec2  u_End;
+            uniform vec2  u_Scale;       // low_res_size / full_res_size
+            uniform vec2  u_TexelSize;   // 1.0 / low_res_size
+            uniform float u_Sharpen;     // 0.0..~0.35
+
+            in vec2 v_TexCoords;
+            out vec4 o_FragColor;
+
+            // Luma for edge measure (mediump is fine on Adreno 610)
+            mediump float luma(mediump vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+
+            void main() {
+                // Distortion UVs
+                mediump vec2 coords = u_Start + v_TexCoords * (u_End - u_Start);
+
+                // Skip scale if 1:1
+                if (u_Scale.x != 1.0 || u_Scale.y != 1.0) {
+                    coords *= u_Scale;
+                }
+
+            // Derivatives for anisotropy and explicit LOD control
+            mediump vec2 dxc = dFdx(coords);
+            mediump vec2 dyc = dFdy(coords);
+            mediump float sx = length(dxc);
+            mediump float sy = length(dyc);
+
+            // Small dynamic LOD bias to reduce shimmer in high distortion
+            mediump float aniso = max(sx, sy);
+            mediump float biasScale = 0.25;
+            mediump float bias = clamp((aniso - 1.0) * biasScale, 0.0, 0.5);
+            mediump vec2 dxb = dxc * (1.0 + bias);
+            mediump vec2 dyb = dyc * (1.0 + bias);
+
+            // Base sample from texture array
+            mediump vec3 c = textureGrad(u_TextureArray, vec3(coords, float(u_SliceIndex)), dxb, dyb).rgb;
+
+            // Early out if no sharpening requested
+            if (u_Sharpen <= 0.0) {
+                o_FragColor = vec4(c, 1.0);
+                return;
+            }
+
+            // Direction choice for neighbor taps
+            bool horiz = (sx >= sy);
+            mediump vec2 off = horiz ? vec2(0.75 * u_TexelSize.x, 0.0) : vec2(0.0, 0.75 * u_TexelSize.y);
+
+            // Neighbor samples
+            mediump vec3 a = textureGrad(u_TextureArray, vec3(coords + off, float(u_SliceIndex)), dxb, dyb).rgb;
+            mediump vec3 b = textureGrad(u_TextureArray, vec3(coords - off, float(u_SliceIndex)), dxb, dyb).rgb;
+
+            // Edge measure
+            mediump float g = abs(luma(a) - luma(b));
+            mediump float edgeW = clamp(g * 2.0, 0.0, 1.0);
+
+            // Local variance suppression
+            mediump float variance = abs(luma(c) - 0.5 * (luma(a) + luma(b)));
+            mediump float suppress = clamp(variance * 2.0, 0.0, 1.0);
+
+            // Unsharp mask
+            mediump vec3 meanAB = 0.5 * (a + b);
+            mediump vec3 hf     = c - meanAB;
+
+            // Adaptive sharpening strength
+            mediump float k = u_Sharpen;
+            k *= (1.0 - 0.6 * edgeW);
+            k *= (1.0 - 0.3 * clamp(aniso - 1.0, 0.0, 1.0));
+            k *= (1.0 - 0.4 * suppress); // suppress in noisy regions
+
+            // Local limiter
+            mediump vec3 limit = max(vec3(0.02), 0.75 * abs(c - meanAB));
+            mediump vec3 boosted = c + k * clamp(hf, -limit, limit);
+
+            // Optional softening for ultra-low scale
+            if (u_Scale.x < 0.5 || u_Scale.y < 0.5) {
+                mediump vec3 blur = 0.25 * (a + b) + 0.5 * c;
+                boosted = mix(boosted, blur, 0.2);
+            }
+
+            // Clamp to displayable range
+            o_FragColor = vec4(clamp(boosted, 0.0, 1.0), 1.0);
     })glsl";
 
 #ifdef __ANDROID__
@@ -162,6 +342,13 @@ GLuint CreateProgram(const char* vertex, const char* fragment) {
 
 }  // namespace
 
+namespace XRRendering {
+    extern int g_full_width;
+    extern int g_full_height;
+    extern float g_eye_internal_scale;
+    extern float g_sharpening_value;
+}
+
 namespace cardboard::rendering {
 
 // @brief OpenGL ES 3.0 concrete implementation of DistortionRenderer.
@@ -203,7 +390,15 @@ class OpenGlEs3DistortionRenderer : public DistortionRenderer {
     uniform_start_ = glGetUniformLocation(program_, "u_Start");
     uniform_end_ = glGetUniformLocation(program_, "u_End");
 
-    // Gen buffers, one per eye.
+    // New uniforms for upscale/sharpen
+    uniform_scale_     = glGetUniformLocation(program_, "u_Scale");      // vec2
+    uniform_texel_size_= glGetUniformLocation(program_, "u_TexelSize");  // vec2
+    uniform_sharpen_   = glGetUniformLocation(program_, "u_Sharpen");    // float
+
+    uniform_texture_array_ = glGetUniformLocation(program_, "u_TextureArray"); // sampler2DArray
+    uniform_slice_index_   = glGetUniformLocation(program_, "u_SliceIndex");   // int
+
+      // Gen buffers, one per eye.
     glGenBuffers(2, &vertices_vbo_[0]);
     glGenBuffers(2, &uvs_vbo_[0]);
     glGenBuffers(2, &elements_vbo_[0]);
@@ -254,46 +449,51 @@ class OpenGlEs3DistortionRenderer : public DistortionRenderer {
    *   - glGet(GL_ARRAY_BUFFER_BINDING)
    *   - glGet(GL_ELEMENT_ARRAY_BUFFER_BINDING)
    */
-  void RenderEyeToDisplay(
-      uint64_t target, int x, int y, int width, int height,
-      const CardboardEyeTextureDescription* left_eye,
-      const CardboardEyeTextureDescription* right_eye) override {
-    if (elements_count_[0] == 0 || elements_count_[1] == 0) {
-      CARDBOARD_LOGE(
-          "Distortion mesh is empty. OpenGlEs3DistortionRenderer::SetMesh was "
-          "not called yet.");
-      return;
+    void RenderEyeToDisplay(
+            uint64_t target,
+            int x, int y,
+            int width, int height,
+            const CardboardEyeTextureDescription* left_eye,
+            const CardboardEyeTextureDescription* right_eye) override
+    {
+        if (elements_count_[0] == 0 || elements_count_[1] == 0) {
+            CARDBOARD_LOGE("Distortion mesh is empty. SetMesh was not called.");
+            return;
+        }
+
+        //CARDBOARD_LOGE("SIZE X %d y %d w %d, h %d", x, y, width, height);
+        glViewport(x, y, width, height);
+        glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(target));
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_CULL_FACE);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
+
+        glUseProgram(program_);
+
+        // Bind the shared texture array once
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, static_cast<GLuint>(left_eye->texture));
+        glUniform1i(uniform_texture_array_, 0);
+
+        // Render left eye (slice 0)
+        glDisable(GL_SCISSOR_TEST);
+        //glScissor(x, y, width / 2, height);
+        glUniform1i(uniform_slice_index_, 0);
+        RenderDistortionMesh(left_eye, kLeft);
+
+        // Render right eye (slice 1)
+        //glScissor(x + width / 2, y, width / 2, height);
+        glUniform1i(uniform_slice_index_, 1);
+        RenderDistortionMesh(right_eye, kRight);
+
+        // Cleanup
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+        glDisable(GL_SCISSOR_TEST);
+        glFlush(); // Upload & Execute the command buffer!!!!!
+        CheckGlError("RenderEyeToDisplay");
     }
-
-    glViewport(x, y, width, height);
-    glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(target));
-    glDisable(GL_SCISSOR_TEST);
-    glDisable(GL_CULL_FACE);
-    glClearColor(.0f, .0f, .0f, 1.0f);
-    glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
-
-    glUseProgram(program_);
-
-    glEnable(GL_SCISSOR_TEST);
-    glScissor(x, y, width / 2, height);
-    RenderDistortionMesh(left_eye, kLeft);
-
-    glScissor(x + width / 2, y, width / 2, height);
-    RenderDistortionMesh(right_eye, kRight);
-
-    // Active GL_TEXTURE0 effectively enables the first texture that is
-    // deactiviated by the DistortionRenderer. Binding array buffer and element
-    // array buffer to the reserved value zero effectively unbinds the buffer
-    // objects that are previously bound by the DistortionRenderer.
-    glActiveTexture(GL_TEXTURE0);
-
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-
-    // Disable scissor test.
-    glDisable(GL_SCISSOR_TEST);
-    CheckGlError("OpenGlEs3DistortionRenderer::RenderEyeToDisplay");
-  }
 
  private:
   /*
@@ -309,35 +509,52 @@ class OpenGlEs3DistortionRenderer : public DistortionRenderer {
    *   - glGet(GL_ELEMENT_ARRAY_BUFFER_BINDING)
    */
   void RenderDistortionMesh(
-      const CardboardEyeTextureDescription* eye_description,
-      CardboardEye eye) const {
-    glBindBuffer(GL_ARRAY_BUFFER, vertices_vbo_[eye]);
-    glVertexAttribPointer(
-        attrib_pos_,
-        2,  // 2 components per vertex
-        GL_FLOAT, false,
-        0,  // Stride and offset 0, as we are using different vbos.
-        0);
-    glEnableVertexAttribArray(attrib_pos_);
+          const CardboardEyeTextureDescription* eye_description,
+          CardboardEye eye) const
+  {
+      // Bind vertex positions
+      glBindBuffer(GL_ARRAY_BUFFER, vertices_vbo_[eye]);
+      glVertexAttribPointer(attrib_pos_, 2, GL_FLOAT, false, 0, 0);
+      glEnableVertexAttribArray(attrib_pos_);
 
-    glBindBuffer(GL_ARRAY_BUFFER, uvs_vbo_[eye]);
-    glVertexAttribPointer(attrib_tex_,
-                          2,  // 2 components per uv
-                          GL_FLOAT, false, 0, 0);
-    glEnableVertexAttribArray(attrib_tex_);
+      // Bind UVs
+      glBindBuffer(GL_ARRAY_BUFFER, uvs_vbo_[eye]);
+      glVertexAttribPointer(attrib_tex_, 2, GL_FLOAT, false, 0, 0);
+      glEnableVertexAttribArray(attrib_tex_);
 
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(eye_texture_type_,
-                  static_cast<GLuint>(eye_description->texture));
+      // Bind shared texture array and set slice index
+      glActiveTexture(GL_TEXTURE0);
+      glBindTexture(GL_TEXTURE_2D_ARRAY, static_cast<GLuint>(eye_description->texture));
+      glUniform1i(uniform_texture_array_, 0);
+      glUniform1i(uniform_slice_index_, (eye == kLeft) ? 0 : 1);
 
-    glUniform2f(uniform_start_, eye_description->left_u,
-                eye_description->bottom_v);
-    glUniform2f(uniform_end_, eye_description->right_u, eye_description->top_v);
+      // Distortion UV remap
+      CardboardEyeTextureDescription local = *eye_description;
+      local.left_u    = 0.0f;
+      local.right_u   = 1.0f;
+      local.top_v     = 1.0f;
+      local.bottom_v  = 0.0f;
 
-    // Draw with indices
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, elements_vbo_[eye]);
-    glDrawElements(GL_TRIANGLE_STRIP, elements_count_[eye], GL_UNSIGNED_INT, 0);
-    CheckGlError("OpenGlEs3DistortionRenderer::RenderDistortionMesh");
+      glUniform2f(uniform_start_, local.left_u, local.bottom_v);
+      glUniform2f(uniform_end_,   local.right_u, local.top_v);
+
+      const int small_width  = static_cast<int>(XRRendering::g_full_width * XRRendering::g_eye_internal_scale);
+      const int small_height = static_cast<int>(XRRendering::g_full_height * XRRendering::g_eye_internal_scale);
+
+      glUniform2f(uniform_scale_,
+                  static_cast<float>(small_width) / static_cast<float>(XRRendering::g_full_width),
+                  static_cast<float>(small_height) / static_cast<float>(XRRendering::g_full_height));
+
+      glUniform2f(uniform_texel_size_,
+                  1.0f / static_cast<float>(small_width),
+                  1.0f / static_cast<float>(small_height));
+
+      glUniform1f(uniform_sharpen_, XRRendering::g_sharpening_value);
+
+      // Draw mesh
+      glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, elements_vbo_[eye]);
+      glDrawElements(GL_TRIANGLE_STRIP, elements_count_[eye], GL_UNSIGNED_INT, 0);
+      CheckGlError("OpenGlEs3DistortionRenderer::RenderDistortionMesh");
   }
 
   std::array<GLuint, 2> vertices_vbo_;  // One per eye.
@@ -350,6 +567,13 @@ class OpenGlEs3DistortionRenderer : public DistortionRenderer {
   GLuint attrib_tex_;
   GLuint uniform_start_;
   GLuint uniform_end_;
+
+  GLint uniform_scale_;
+  GLint uniform_texel_size_;
+  GLint uniform_sharpen_;
+
+  GLint uniform_texture_array_;
+  GLint uniform_slice_index_;
 
   GLenum eye_texture_type_;
 };

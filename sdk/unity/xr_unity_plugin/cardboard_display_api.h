@@ -340,6 +340,8 @@ void CardboardUnity_setDeviceParametersChanged();
 /// @param graphics_api The graphics API to use.
 void CardboardUnity_setGraphicsApi(CardboardGraphicsApi graphics_api);
 
+void CardboardUnity_setRenderParams(float scale, float sharpening);
+
 #ifdef __cplusplus
 }
 #endif

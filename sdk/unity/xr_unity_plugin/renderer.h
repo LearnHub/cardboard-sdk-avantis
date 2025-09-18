@@ -103,6 +103,11 @@ class Renderer {
   virtual void CreateRenderTexture(RenderTexture* render_texture,
                                    int screen_width, int screen_height) = 0;
 
+virtual void CreateRenderTextureArray(RenderTexture* render_texture,
+                                                 int width,
+                                                 int height,
+                                                 int layer_count) = 0;
+
   /// @brief Releases resources in a RenderTexture.
   ///
   /// @param render_texture A RenderTexture to release its resources.

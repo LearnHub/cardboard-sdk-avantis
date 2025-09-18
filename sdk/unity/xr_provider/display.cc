@@ -32,7 +32,22 @@
   XR_TRACE_LOG(trace, "[CardboardXrDisplayProvider]: " message "\n", \
                ##__VA_ARGS__)
 
+namespace XRRendering {
+    // Internal eye texture scale (0.1–1.0). 0.5 means Unity renders each eye at 50%
+    // width/height of the normal per-eye size. Adjust via code or expose a JNI setter.
+    float g_eye_internal_scale = 1.0f;
+    float g_sharpening_value = 0.0f;
+    int g_full_width = 0;
+    int g_full_height = 0;
+
+    static inline int ScaleDim(int v, float s)
+    {
+        return std::max(1, static_cast<int>(v * s));
+    }
+}
+
 namespace {
+
 // @brief Holds the implementation methods of UnityLifecycleProvider and
 //        UnityXRDisplayGraphicsThreadProvider
 class CardboardDisplayProvider {
@@ -82,10 +97,14 @@ class CardboardDisplayProvider {
     // Register for callbacks on the graphics thread.
     UnityXRDisplayGraphicsThreadProvider gfx_thread_provider{};
     gfx_thread_provider.userData = NULL;
-    gfx_thread_provider.Start = [](UnitySubsystemHandle, void*,
-                                   UnityXRRenderingCapabilities* rendering_caps)
-        -> UnitySubsystemErrorCode {
-      return GetInstance()->GfxThread_Start(rendering_caps);
+    gfx_thread_provider.Start = [](UnitySubsystemHandle, void*, UnityXRRenderingCapabilities* rendering_caps)
+            -> UnitySubsystemErrorCode
+            {
+                // Advertise SPI capability immediately
+                rendering_caps->noSinglePassRenderingSupport = false;
+                rendering_caps->invalidateRenderStateAfterEachCallback = true;
+                rendering_caps->skipPresentToMainScreen = false;
+                return GetInstance()->GfxThread_Start(rendering_caps);
     };
     gfx_thread_provider.SubmitCurrentFrame =
         [](UnitySubsystemHandle, void*) -> UnitySubsystemErrorCode {
@@ -128,11 +147,14 @@ class CardboardDisplayProvider {
   void Stop() const {}
 
   void Shutdown() const {}
-
   UnitySubsystemErrorCode GfxThread_Start(
       UnityXRRenderingCapabilities* rendering_caps) const {
-    // The display provider uses multipass redering.
-    rendering_caps->noSinglePassRenderingSupport = true;
+    ///////!!!!!!!!!!!!!!!!!!!!!!!!!!///////////////////////////////
+      ///////!!!!!!!!!!!!!!!!!!!!!!!!!!///////////////////////////////
+      ///////!!!!!!!!!!!!!!!!!!!!!!!!!!///////////////////////////////
+      ///////!!!!!!!!!!!!!!!!!!!!!!!!!!///////////////////////////////
+    rendering_caps->noSinglePassRenderingSupport = false;
+
     rendering_caps->invalidateRenderStateAfterEachCallback = true;
     // Unity will swap buffers for us after GfxThread_SubmitCurrentFrame() is
     // executed.
@@ -142,20 +164,21 @@ class CardboardDisplayProvider {
 
   UnitySubsystemErrorCode GfxThread_SubmitCurrentFrame() {
     if (!is_initialized_) {
-      CARDBOARD_DISPLAY_XR_TRACE_LOG(
-          trace_, "Skip the rendering because Cardboard SDK is uninitialized.");
+      CARDBOARD_DISPLAY_XR_TRACE_LOG(trace_, "Skip the rendering because Cardboard SDK is uninitialized.");
       return kUnitySubsystemErrorCodeFailure;
     }
     cardboard_display_api_->RunRenderingPreProcessing();
     cardboard_display_api_->RenderEyesToDisplay();
-    cardboard_display_api_->RenderWidgets();
-    cardboard_display_api_->RunRenderingPostProcessing();
+    //cardboard_display_api_->RenderWidgets(); // NOT required
+    //cardboard_display_api_->RunRenderingPostProcessing(); // This is empty on all renderers atm.
     return kUnitySubsystemErrorCodeSuccess;
   }
 
-  UnitySubsystemErrorCode GfxThread_PopulateNextFrameDesc(
+  /*
+    UnitySubsystemErrorCode GfxThread_PopulateNextFrameDesc(
       const UnityXRFrameSetupHints* frame_hints,
-      UnityXRNextFrameDesc* next_frame) {
+      UnityXRNextFrameDesc* next_frame)
+      {
     // Allocate new color texture descriptors if needed and update device
     // parameters in Cardboard SDK.
     if ((frame_hints->changedFlags &
@@ -180,9 +203,20 @@ class CardboardDisplayProvider {
       // Initialize texture descriptors.
       for (size_t i = 0; i < texture_descriptors_.size(); ++i) {
         texture_descriptors_[i] = {};
-        texture_descriptors_[i].width = width_ / 2;
-        texture_descriptors_[i].height = height_;
-        texture_descriptors_[i].flags = 0;
+        //texture_descriptors_[i].width = width_ / 2;
+        //texture_descriptors_[i].height = height_;
+
+          // Per-eye base dimensions:
+          const int base_eye_w = width_ / 2;
+          const int base_eye_h = height_;
+          // Apply internal scale:
+          CARDBOARD_DISPLAY_XR_TRACE_LOG(trace_, "Base eye: %d x %d", width_ /2, height_);
+
+          const int scaled_eye_w = ScaleDim(base_eye_w, g_eye_internal_scale);
+          const int scaled_eye_h = ScaleDim(base_eye_h, g_eye_internal_scale);
+          texture_descriptors_[i].width = scaled_eye_w;
+          texture_descriptors_[i].height = scaled_eye_h;
+          texture_descriptors_[i].flags = 0;
 
         texture_descriptors_[i].depthFormat =
             kUnityXRDepthTextureFormat24bitOrGreater;
@@ -257,6 +291,92 @@ class CardboardDisplayProvider {
     next_frame->renderPasses[1].renderParamsCount = 1;
 
     return kUnitySubsystemErrorCodeSuccess;
+  }
+  */
+  UnitySubsystemErrorCode GfxThread_PopulateNextFrameDesc(
+          const UnityXRFrameSetupHints* frame_hints,
+          UnityXRNextFrameDesc* next_frame)
+  {
+      if ((frame_hints->changedFlags & kUnityXRFrameSetupHintsChangedTextureResolutionScale) != 0 || !is_initialized_ || cardboard::unity::CardboardDisplayApi::GetDeviceParametersChanged())
+      {
+          CARDBOARD_DISPLAY_XR_TRACE_LOG(trace_, "Initializes Cardboard API.");
+          cardboard_display_api_.reset(new cardboard::unity::CardboardDisplayApi());
+
+          for (auto&& tex : tex_map_) {
+              display_->DestroyTexture(handle_, tex.second);
+          }
+          tex_map_.clear();
+
+          cardboard::unity::CardboardDisplayApi::GetScreenParams(&width_, &height_);
+          cardboard_display_api_->UpdateDeviceParams();
+          is_initialized_ = true;
+
+          // --- Single stereo descriptor ---
+          texture_descriptors_.fill({}); // clear both slots
+          const int base_eye_w = width_ / 2;
+          const int base_eye_h = height_;
+          const int scaled_eye_w = XRRendering::ScaleDim(base_eye_w, XRRendering::g_eye_internal_scale);
+          const int scaled_eye_h = XRRendering::ScaleDim(base_eye_h, XRRendering::g_eye_internal_scale);
+          XRRendering::g_full_width = base_eye_w;
+          XRRendering::g_full_height = base_eye_h;
+
+          //CARDBOARD_DISPLAY_XR_TRACE_LOG(trace_, "SIZE w %d, h %d", base_eye_w, base_eye_h);
+
+          texture_descriptors_[0].width              = scaled_eye_w;
+          texture_descriptors_[0].height             = scaled_eye_h;
+          texture_descriptors_[0].textureArrayLength = 2; // stereo array
+          texture_descriptors_[0].depthFormat        = kUnityXRDepthTextureFormat24bitOrGreater;
+          texture_descriptors_[0].flags              = 0; // or SRGB/UV origin flags if needed
+      }
+
+      if (!frame_hints->appSetup.singlePassRendering)
+      {
+          //CARDBOARD_DISPLAY_XR_TRACE_LOG(trace_, "Unity: singlePassRendering = false — fallback to Multi-Pass/Multiview");
+      }
+      else {
+          //CARDBOARD_DISPLAY_XR_TRACE_LOG(trace_, "Unity: singlePassRendering = trie");
+      }
+
+      // --- Create/bind the stereo array texture ---
+      const uint64_t tex_color_id = cardboard_display_api_->GetLeftTextureColorBufferId();
+      const uint64_t tex_depth_id = cardboard_display_api_->GetLeftTextureDepthBufferId();
+
+      UnityXRRenderTextureId unity_tex_id = 0;
+      const auto found = tex_map_.find(tex_color_id);
+      if (found == tex_map_.end()) {
+          UnityXRRenderTextureDesc desc = texture_descriptors_[0];
+          desc.color.nativePtr = ToVoidPointer(tex_color_id);
+          desc.depth.nativePtr = ToVoidPointer(tex_depth_id);
+          display_->CreateTexture(handle_, &desc, &unity_tex_id);
+          tex_map_[tex_color_id] = unity_tex_id;
+      } else {
+          unity_tex_id = found->second;
+      }
+
+      // --- Collapse to one render pass with two eyes ---
+      next_frame->renderPassesCount = 1;
+      next_frame->renderPasses[0].textureId = unity_tex_id;
+      next_frame->renderPasses[0].renderParamsCount = 2;
+
+      // Fill both eyes' params into the same pass
+      for (int eye = 0; eye < 2; ++eye) {
+          std::array<float, 4> fov;
+          std::array<float, 16> eye_from_head;
+          cardboard_display_api_->GetEyeMatrices(eye, eye_from_head.data(), fov.data());
+
+          auto* eye_params = &next_frame->renderPasses[0].renderParams[eye];
+          eye_params->deviceAnchorToEyePose = cardboard::unity::CardboardTransformToUnityPose(eye_from_head);
+          eye_params->viewportRect = frame_hints->appSetup.renderViewport;
+          eye_params->textureArraySlice = (eye == 0) ? 0 : 1;
+          ConfigureFieldOfView(fov, &eye_params->projection);
+      }
+
+      // One culling pass for both eyes
+      next_frame->cullingPasses[0].deviceAnchorToCullingPose = next_frame->renderPasses[0].renderParams[0].deviceAnchorToEyePose;
+      next_frame->cullingPasses[0].projection = next_frame->renderPasses[0].renderParams[0].projection;
+      next_frame->cullingPasses[0].separation = kCullingSphereDiameter;
+
+      return kUnitySubsystemErrorCodeSuccess;
   }
 
   UnitySubsystemErrorCode GfxThread_Stop() {
