@@ -63,7 +63,7 @@ class CardboardDisplayApi {
   ///          (eye-from-head and perspective), and configures the distortion
   ///          meshes for both eyes. If no device parameters are provided,
   ///          Cardboard V1 device parameters is used.
-  void UpdateDeviceParams();
+  void UpdateDeviceParams(bool isSinglePass);
 
   /// @brief Gets the eye perspective matrix and field of view.
   /// @pre UpdateDeviceParams() must have been successfully called.
@@ -225,7 +225,7 @@ class CardboardDisplayApi {
   };
 
   // @brief Configures rendering resources.
-  void RenderingResourcesSetup();
+  void RenderingResourcesSetup(bool isSinglePass);
 
   // @brief Frees rendering resources.
   void RenderingResourcesTeardown();

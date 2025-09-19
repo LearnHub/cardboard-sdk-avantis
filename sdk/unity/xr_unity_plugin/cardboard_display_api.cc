@@ -119,7 +119,8 @@ void CardboardDisplayApi::ScanDeviceParams() {
   CardboardQrCode_scanQrCodeAndSaveDeviceParams();
 }
 
-void CardboardDisplayApi::UpdateDeviceParams() {
+void CardboardDisplayApi::UpdateDeviceParams(bool isSinglePass)
+{
   if (selected_graphics_api_ == kNone) {
     LOGE(
         "Misconfigured Graphics API. Neither OpenGL ES 2.0 nor OpenGL ES 3.0 "
@@ -150,20 +151,17 @@ void CardboardDisplayApi::UpdateDeviceParams() {
   }
   device_params_changed_ = false;
 
-  RenderingResourcesSetup();
+  RenderingResourcesSetup(isSinglePass);
 
-  const CardboardOpenGlEsDistortionRendererConfig
-      opengl_distortion_renderer_config{kGlTexture2D};
+  const CardboardOpenGlEsDistortionRendererConfig opengl_distortion_renderer_config{kGlTexture2D, isSinglePass};
   switch (selected_graphics_api_) {
     case CardboardGraphicsApi::kOpenGlEs2:
-      distortion_renderer_.reset(CardboardOpenGlEs2DistortionRenderer_create(
-          &opengl_distortion_renderer_config));
+      distortion_renderer_.reset(CardboardOpenGlEs2DistortionRenderer_create(&opengl_distortion_renderer_config));
       break;
     case CardboardGraphicsApi::kOpenGlEs3:
       // #gles3 - This call is only needed if OpenGL ES 3.0 support is
       // desired. Remove the following line if OpenGL ES 3.0 is not needed.
-      distortion_renderer_.reset(CardboardOpenGlEs3DistortionRenderer_create(
-          &opengl_distortion_renderer_config));
+      distortion_renderer_.reset(CardboardOpenGlEs3DistortionRenderer_create(&opengl_distortion_renderer_config));
       break;
 #if defined(__APPLE__)
     case CardboardGraphicsApi::kMetal:
@@ -252,10 +250,7 @@ uint64_t CardboardDisplayApi::GetLeftTextureColorBufferId() {
 }
 
 uint64_t CardboardDisplayApi::GetRightTextureColorBufferId() {
-    if (selected_graphics_api_ == kOpenGlEs3)
-        return render_textures_[CardboardEye::kLeft].color_buffer;
-    else
-        return render_textures_[CardboardEye::kRight].color_buffer;
+    return render_textures_[CardboardEye::kRight].color_buffer;
 }
 
 uint64_t CardboardDisplayApi::GetLeftTextureDepthBufferId() {
@@ -263,10 +258,7 @@ uint64_t CardboardDisplayApi::GetLeftTextureDepthBufferId() {
 }
 
 uint64_t CardboardDisplayApi::GetRightTextureDepthBufferId() {
-    if (selected_graphics_api_ == kOpenGlEs3)
-        return render_textures_[CardboardEye::kLeft].depth_buffer;
-    else
-        return render_textures_[CardboardEye::kRight].depth_buffer;
+    return render_textures_[CardboardEye::kRight].depth_buffer;
 }
 
 void CardboardDisplayApi::GetScreenParams(int* width, int* height) {
@@ -323,76 +315,74 @@ void CardboardDisplayApi::SetUnityInterfaces(IUnityInterfaces* xr_interfaces) {
 }
 
 // @brief Configures rendering resources.
-    void CardboardDisplayApi::RenderingResourcesSetup()
+void CardboardDisplayApi::RenderingResourcesSetup(bool isSinglePass)
+{
+    if (selected_graphics_api_ == kNone) {
+        LOGE("Misconfigured Graphics API. Neither OpenGL ES 2.0 nor OpenGL ES 3.0 "
+             "nor Metal nor Vulkan was selected.");
+        return;
+    }
+
+    if (render_textures_[0].color_buffer != 0) {
+        RenderingResourcesTeardown();
+    }
+
+    // SPI path (GLES3+): single Texture2DArray for color + depth, 2 layers (L/R)
+    if (selected_graphics_api_ == kOpenGlEs3 && isSinglePass)
     {
-        if (selected_graphics_api_ == kNone) {
-            LOGE("Misconfigured Graphics API. Neither OpenGL ES 2.0 nor OpenGL ES 3.0 "
-                 "nor Metal nor Vulkan was selected.");
-            return;
-        }
+        LOGE("Single Pass");
+        // IMPORTANT: CreateRenderTextureArray should allocate with per-eye size:
+        // layer_count = 2
+        renderer_->CreateRenderTextureArray(&render_textures_[CardboardEye::kLeft],
+                                            screen_params_.viewport_width,
+                                            screen_params_.viewport_height,
+                                            2);
 
-        if (render_textures_[0].color_buffer != 0) {
-            RenderingResourcesTeardown();
-        }
+        // Alias right eye to the same array handles (color + depth)
+        render_textures_[CardboardEye::kRight].color_buffer = render_textures_[CardboardEye::kLeft].color_buffer;
+        render_textures_[CardboardEye::kRight].depth_buffer = render_textures_[CardboardEye::kLeft].depth_buffer;
 
-        // SPI path (GLES3+): single Texture2DArray for color + depth, 2 layers (L/R)
-        if (selected_graphics_api_ == kOpenGlEs3)
+        // We don't care about those 2D widgets for phones
+        //renderer_->SetupWidgets();
+
+        // Both eyes reference the same texture array; layer is selected at FBO bind (or in instanced draw)
+        for (int eye = 0; eye < CardboardEye::kMax; ++eye)
         {
-
-            LOGE("Texture Array!.");
-
-            // IMPORTANT: CreateRenderTextureArray should allocate with per-eye size:
-            // layer_count = 2
-            renderer_->CreateRenderTextureArray(&render_textures_[CardboardEye::kLeft],
-                                                screen_params_.viewport_width,
-                                                screen_params_.viewport_height,
-                                                2);
-
-            // Alias right eye to the same array handles (color + depth)
-            render_textures_[CardboardEye::kRight].color_buffer = render_textures_[CardboardEye::kLeft].color_buffer;
-            render_textures_[CardboardEye::kRight].depth_buffer = render_textures_[CardboardEye::kLeft].depth_buffer;
-
-            // We don't care about those 2D widgets for phones
-            //renderer_->SetupWidgets();
-
-            // Both eyes reference the same texture array; layer is selected at FBO bind (or in instanced draw)
-            for (int eye = 0; eye < CardboardEye::kMax; ++eye)
-            {
-                eye_data_[eye].texture.texture  = render_textures_[CardboardEye::kLeft].color_buffer;
-                eye_data_[eye].texture.left_u   = 0;
-                eye_data_[eye].texture.right_u  = 1;
-                eye_data_[eye].texture.top_v    = 1;
-                eye_data_[eye].texture.bottom_v = 0;
-            }
-        }
-        else
-        {
-            LOGE("Multi Pass.");
-
-            // Original multi-pass fallback (e.g., ES2)
-            renderer_->CreateRenderTexture(&render_textures_[CardboardEye::kLeft],
-                                           screen_params_.viewport_width,
-                                           screen_params_.viewport_height);
-            renderer_->CreateRenderTexture(&render_textures_[CardboardEye::kRight],
-                                           screen_params_.viewport_width,
-                                           screen_params_.viewport_height);
-            renderer_->SetupWidgets();
-
-            eye_data_[CardboardEye::kLeft].texture.texture =
-                    render_textures_[CardboardEye::kLeft].color_buffer;
-            eye_data_[CardboardEye::kLeft].texture.left_u = 0;
-            eye_data_[CardboardEye::kLeft].texture.right_u = 1;
-            eye_data_[CardboardEye::kLeft].texture.top_v = 1;
-            eye_data_[CardboardEye::kLeft].texture.bottom_v = 0;
-
-            eye_data_[CardboardEye::kRight].texture.texture =
-                    render_textures_[CardboardEye::kRight].color_buffer;
-            eye_data_[CardboardEye::kRight].texture.left_u = 0;
-            eye_data_[CardboardEye::kRight].texture.right_u = 1;
-            eye_data_[CardboardEye::kRight].texture.top_v = 1;
-            eye_data_[CardboardEye::kRight].texture.bottom_v = 0;
+            eye_data_[eye].texture.texture  = render_textures_[CardboardEye::kLeft].color_buffer;
+            eye_data_[eye].texture.left_u   = 0;
+            eye_data_[eye].texture.right_u  = 1;
+            eye_data_[eye].texture.top_v    = 1;
+            eye_data_[eye].texture.bottom_v = 0;
         }
     }
+    else //if(isSinglePass == false)
+    {
+        LOGE("Multi Pass.");
+        // Original multi-pass fallback (e.g., ES2)
+        renderer_->CreateRenderTexture(&render_textures_[CardboardEye::kLeft],
+                                       screen_params_.viewport_width,
+                                       screen_params_.viewport_height);
+        renderer_->CreateRenderTexture(&render_textures_[CardboardEye::kRight],
+                                       screen_params_.viewport_width,
+                                       screen_params_.viewport_height);
+        renderer_->SetupWidgets();
+
+        eye_data_[CardboardEye::kLeft].texture.texture =
+                render_textures_[CardboardEye::kLeft].color_buffer;
+        eye_data_[CardboardEye::kLeft].texture.left_u = 0;
+        eye_data_[CardboardEye::kLeft].texture.right_u = 1;
+        eye_data_[CardboardEye::kLeft].texture.top_v = 1;
+        eye_data_[CardboardEye::kLeft].texture.bottom_v = 0;
+
+        eye_data_[CardboardEye::kRight].texture.texture =
+                render_textures_[CardboardEye::kRight].color_buffer;
+        eye_data_[CardboardEye::kRight].texture.left_u = 0;
+        eye_data_[CardboardEye::kRight].texture.right_u = 1;
+        eye_data_[CardboardEye::kRight].texture.top_v = 1;
+        eye_data_[CardboardEye::kRight].texture.bottom_v = 0;
+    }
+}
+//---------------------------------------------------------------------------
 
 void CardboardDisplayApi::RenderingResourcesTeardown() {
   if (render_textures_[0].color_buffer == 0) {

@@ -44,7 +44,6 @@ namespace {
 
     static std::array<GLuint, 2> upscale_tex = {0, 0};
 
-
     constexpr const char* kDistortionVertexShader =
     R"glsl(#version 300 es
     precision mediump float;
@@ -57,27 +56,98 @@ namespace {
       v_TexCoords = a_TexCoords;
     })glsl";
 
-    /*
-constexpr const char* kDistortionFragmentShaderTexture2D =
+    // Multi Pass version
+    constexpr const char* kDistortionFragmentShaderTexture2D =
     R"glsl(#version 300 es
     precision mediump float;
 
-    uniform sampler2D u_Texture;
-    uniform vec2 u_Start;
-    uniform vec2 u_End;
+    uniform sampler2D u_Texture;   // <-- single 2D texture
+    uniform vec2  u_Start;
+    uniform vec2  u_End;
+    uniform vec2  u_Scale;       // low_res_size / full_res_size
+    uniform vec2  u_TexelSize;   // 1.0 / low_res_size
+    uniform float u_Sharpen;     // 0.0..~0.35
+
     in vec2 v_TexCoords;
     out vec4 o_FragColor;
 
-    void main() {
-      vec2 coords = u_Start + v_TexCoords * (u_End - u_Start);
-      o_FragColor = texture(u_Texture, coords);
-    })glsl";
-     */
+    // Luma for edge measure (mediump is fine on Adreno 610)
+    mediump float luma(mediump vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 
-    // Great
-    /*
-    constexpr const char* kDistortionFragmentShaderTexture2D =
-            R"glsl(#version 300 es
+    void main() {
+        // Distortion UVs
+        mediump vec2 coords = u_Start + v_TexCoords * (u_End - u_Start);
+
+        // Skip scale if 1:1
+        if (u_Scale.x != 1.0 || u_Scale.y != 1.0) {
+            coords *= u_Scale;
+        }
+
+    // Derivatives for anisotropy and explicit LOD control
+    mediump vec2 dxc = dFdx(coords);
+    mediump vec2 dyc = dFdy(coords);
+    mediump float sx = length(dxc);
+    mediump float sy = length(dyc);
+
+    // Small dynamic LOD bias to reduce shimmer in high distortion
+    mediump float aniso = max(sx, sy);
+    mediump float biasScale = 0.25;
+    mediump float bias = clamp((aniso - 1.0) * biasScale, 0.0, 0.5);
+    mediump vec2 dxb = dxc * (1.0 + bias);
+    mediump vec2 dyb = dyc * (1.0 + bias);
+
+    // Base sample from texture
+    mediump vec3 c = textureGrad(u_Texture, coords, dxb, dyb).rgb;
+
+    // Early out if no sharpening requested
+    if (u_Sharpen <= 0.0) {
+        o_FragColor = vec4(c, 1.0);
+        return;
+    }
+
+    // Direction choice for neighbor taps
+    bool horiz = (sx >= sy);
+    mediump vec2 off = horiz ? vec2(0.75 * u_TexelSize.x, 0.0) : vec2(0.0, 0.75 * u_TexelSize.y);
+
+    // Neighbor samples
+    mediump vec3 a = textureGrad(u_Texture, coords + off, dxb, dyb).rgb;
+    mediump vec3 b = textureGrad(u_Texture, coords - off, dxb, dyb).rgb;
+
+    // Edge measure
+    mediump float g = abs(luma(a) - luma(b));
+    mediump float edgeW = clamp(g * 2.0, 0.0, 1.0);
+
+    // Local variance suppression
+    mediump float variance = abs(luma(c) - 0.5 * (luma(a) + luma(b)));
+    mediump float suppress = clamp(variance * 2.0, 0.0, 1.0);
+
+    // Unsharp mask
+    mediump vec3 meanAB = 0.5 * (a + b);
+    mediump vec3 hf     = c - meanAB;
+
+    // Adaptive sharpening strength
+    mediump float k = u_Sharpen;
+    k *= (1.0 - 0.6 * edgeW);
+    k *= (1.0 - 0.3 * clamp(aniso - 1.0, 0.0, 1.0));
+    k *= (1.0 - 0.4 * suppress); // suppress in noisy regions
+
+    // Local limiter
+    mediump vec3 limit = max(vec3(0.02), 0.75 * abs(c - meanAB));
+    mediump vec3 boosted = c + k * clamp(hf, -limit, limit);
+
+    // Softening for ultra-low scale
+    if (u_Scale.x < 0.5 || u_Scale.y < 0.5) {
+        mediump vec3 blur = 0.25 * (a + b) + 0.5 * c;
+        boosted = mix(boosted, blur, 0.2);
+    }
+
+    // Clamp to displayable range
+    o_FragColor = vec4(clamp(boosted, 0.0, 1.0), 1.0);
+    })glsl";
+
+    // Single Pass version
+    constexpr const char* kDistortionFragmentShaderTexture2DArray =
+    R"glsl(#version 300 es
     precision mediump float;
 
     uniform sampler2DArray u_TextureArray;
@@ -104,148 +174,66 @@ constexpr const char* kDistortionFragmentShaderTexture2D =
             coords *= u_Scale;
         }
 
-        // Derivatives for anisotropy and explicit LOD control
-        mediump vec2 dxc = dFdx(coords);
-        mediump vec2 dyc = dFdy(coords);
-        mediump float sx = length(dxc);
-        mediump float sy = length(dyc);
+    // Derivatives for anisotropy and explicit LOD control
+    mediump vec2 dxc = dFdx(coords);
+    mediump vec2 dyc = dFdy(coords);
+    mediump float sx = length(dxc);
+    mediump float sy = length(dyc);
 
-        // Small dynamic LOD bias to reduce shimmer in high distortion
-        // Scale is gentle to avoid blur in the fovea.
-        mediump float aniso = max(sx, sy);
-        mediump float biasScale = 0.25;   // tune: 0.2..0.4
-        mediump float bias = clamp((aniso - 1.0) * biasScale, 0.0, 0.5);
-        mediump vec2 dxb = dxc * (1.0 + bias);
-        mediump vec2 dyb = dyc * (1.0 + bias);
+    // Small dynamic LOD bias to reduce shimmer in high distortion
+    mediump float aniso = max(sx, sy);
+    mediump float biasScale = 0.25;
+    mediump float bias = clamp((aniso - 1.0) * biasScale, 0.0, 0.5);
+    mediump vec2 dxb = dxc * (1.0 + bias);
+    mediump vec2 dyb = dyc * (1.0 + bias);
 
-        // Base sample from texture array (explicit gradients to apply bias)
-        mediump vec3 c = textureGrad(u_TextureArray, vec3(coords, float(u_SliceIndex)), dxb, dyb).rgb;
+    // Base sample from texture array
+    mediump vec3 c = textureGrad(u_TextureArray, vec3(coords, float(u_SliceIndex)), dxb, dyb).rgb;
 
-        // Early out if no sharpening requested
-        if (u_Sharpen <= 0.0) {
-            o_FragColor = vec4(c, 1.0);
-            return;
-        }
+    // Early out if no sharpening requested
+    if (u_Sharpen <= 0.0) {
+        o_FragColor = vec4(c, 1.0);
+        return;
+    }
 
-        // Direction choice for neighbor taps (dominant gradient)
-        bool horiz = (sx >= sy);
-        mediump vec2 off = horiz ? vec2(u_TexelSize.x, 0.0) : vec2(0.0, u_TexelSize.y);
+    // Direction choice for neighbor taps
+    bool horiz = (sx >= sy);
+    mediump vec2 off = horiz ? vec2(0.75 * u_TexelSize.x, 0.0) : vec2(0.0, 0.75 * u_TexelSize.y);
 
-        // Neighbor samples with same LOD bias (reuse dxb/dyb for coherence)
-        mediump vec3 a = textureGrad(u_TextureArray, vec3(coords + off, float(u_SliceIndex)), dxb, dyb).rgb;
-        mediump vec3 b = textureGrad(u_TextureArray, vec3(coords - off, float(u_SliceIndex)), dxb, dyb).rgb;
+    // Neighbor samples
+    mediump vec3 a = textureGrad(u_TextureArray, vec3(coords + off, float(u_SliceIndex)), dxb, dyb).rgb;
+    mediump vec3 b = textureGrad(u_TextureArray, vec3(coords - off, float(u_SliceIndex)), dxb, dyb).rgb;
 
-        // Edge measure from directional neighbors to avoid halos on strong edges
-        mediump float g = abs(luma(a) - luma(b));      // directional contrast
-        mediump float edgeW = clamp(g * 2.0, 0.0, 1.0); // scale: tune 1.5..3.0
+    // Edge measure
+    mediump float g = abs(luma(a) - luma(b));
+    mediump float edgeW = clamp(g * 2.0, 0.0, 1.0);
 
-        // Limited unsharp mask (2-tap variant)
-        // hf ≈ c - mean(a,b); sharpened = c + k * clamp(hf, -H, +H)
-        mediump vec3 meanAB = 0.5 * (a + b);
-        mediump vec3 hf     = c - meanAB;
+    // Local variance suppression
+    mediump float variance = abs(luma(c) - 0.5 * (luma(a) + luma(b)));
+    mediump float suppress = clamp(variance * 2.0, 0.0, 1.0);
 
-        // Reduce sharpening near strong edges and with higher anisotropy
-        mediump float k = u_Sharpen;
-        k *= (1.0 - 0.6 * edgeW);     // back off on edges
-        k *= (1.0 - 0.3 * clamp(aniso - 1.0, 0.0, 1.0)); // back off when derivatives stretch
+    // Unsharp mask
+    mediump vec3 meanAB = 0.5 * (a + b);
+    mediump vec3 hf     = c - meanAB;
 
-        // Local limiter to prevent halos/ringing
-        mediump vec3 limit = max(vec3(0.02), 0.75 * abs(c - meanAB)); // floor avoids total kill in flat areas
-        mediump vec3 boosted = c + k * clamp(hf, -limit, limit);
+    // Adaptive sharpening strength
+    mediump float k = u_Sharpen;
+    k *= (1.0 - 0.6 * edgeW);
+    k *= (1.0 - 0.3 * clamp(aniso - 1.0, 0.0, 1.0));
+    k *= (1.0 - 0.4 * suppress); // suppress in noisy regions
 
-        // Clamp to displayable range (assumes linear color; adjust if using sRGB)
-        o_FragColor = vec4(clamp(boosted, 0.0, 1.0), 1.0);
-    })glsl";
-    */
+    // Local limiter
+    mediump vec3 limit = max(vec3(0.02), 0.75 * abs(c - meanAB));
+    mediump vec3 boosted = c + k * clamp(hf, -limit, limit);
 
-    constexpr const char* kDistortionFragmentShaderTexture2D =
-            R"glsl(#version 300 es
-            precision mediump float;
+    // Optional softening for ultra-low scale
+    if (u_Scale.x < 0.5 || u_Scale.y < 0.5) {
+        mediump vec3 blur = 0.25 * (a + b) + 0.5 * c;
+        boosted = mix(boosted, blur, 0.2);
+    }
 
-            uniform sampler2DArray u_TextureArray;
-            uniform int   u_SliceIndex;
-
-            uniform vec2  u_Start;
-            uniform vec2  u_End;
-            uniform vec2  u_Scale;       // low_res_size / full_res_size
-            uniform vec2  u_TexelSize;   // 1.0 / low_res_size
-            uniform float u_Sharpen;     // 0.0..~0.35
-
-            in vec2 v_TexCoords;
-            out vec4 o_FragColor;
-
-            // Luma for edge measure (mediump is fine on Adreno 610)
-            mediump float luma(mediump vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
-
-            void main() {
-                // Distortion UVs
-                mediump vec2 coords = u_Start + v_TexCoords * (u_End - u_Start);
-
-                // Skip scale if 1:1
-                if (u_Scale.x != 1.0 || u_Scale.y != 1.0) {
-                    coords *= u_Scale;
-                }
-
-            // Derivatives for anisotropy and explicit LOD control
-            mediump vec2 dxc = dFdx(coords);
-            mediump vec2 dyc = dFdy(coords);
-            mediump float sx = length(dxc);
-            mediump float sy = length(dyc);
-
-            // Small dynamic LOD bias to reduce shimmer in high distortion
-            mediump float aniso = max(sx, sy);
-            mediump float biasScale = 0.25;
-            mediump float bias = clamp((aniso - 1.0) * biasScale, 0.0, 0.5);
-            mediump vec2 dxb = dxc * (1.0 + bias);
-            mediump vec2 dyb = dyc * (1.0 + bias);
-
-            // Base sample from texture array
-            mediump vec3 c = textureGrad(u_TextureArray, vec3(coords, float(u_SliceIndex)), dxb, dyb).rgb;
-
-            // Early out if no sharpening requested
-            if (u_Sharpen <= 0.0) {
-                o_FragColor = vec4(c, 1.0);
-                return;
-            }
-
-            // Direction choice for neighbor taps
-            bool horiz = (sx >= sy);
-            mediump vec2 off = horiz ? vec2(0.75 * u_TexelSize.x, 0.0) : vec2(0.0, 0.75 * u_TexelSize.y);
-
-            // Neighbor samples
-            mediump vec3 a = textureGrad(u_TextureArray, vec3(coords + off, float(u_SliceIndex)), dxb, dyb).rgb;
-            mediump vec3 b = textureGrad(u_TextureArray, vec3(coords - off, float(u_SliceIndex)), dxb, dyb).rgb;
-
-            // Edge measure
-            mediump float g = abs(luma(a) - luma(b));
-            mediump float edgeW = clamp(g * 2.0, 0.0, 1.0);
-
-            // Local variance suppression
-            mediump float variance = abs(luma(c) - 0.5 * (luma(a) + luma(b)));
-            mediump float suppress = clamp(variance * 2.0, 0.0, 1.0);
-
-            // Unsharp mask
-            mediump vec3 meanAB = 0.5 * (a + b);
-            mediump vec3 hf     = c - meanAB;
-
-            // Adaptive sharpening strength
-            mediump float k = u_Sharpen;
-            k *= (1.0 - 0.6 * edgeW);
-            k *= (1.0 - 0.3 * clamp(aniso - 1.0, 0.0, 1.0));
-            k *= (1.0 - 0.4 * suppress); // suppress in noisy regions
-
-            // Local limiter
-            mediump vec3 limit = max(vec3(0.02), 0.75 * abs(c - meanAB));
-            mediump vec3 boosted = c + k * clamp(hf, -limit, limit);
-
-            // Optional softening for ultra-low scale
-            if (u_Scale.x < 0.5 || u_Scale.y < 0.5) {
-                mediump vec3 blur = 0.25 * (a + b) + 0.5 * c;
-                boosted = mix(boosted, blur, 0.2);
-            }
-
-            // Clamp to displayable range
-            o_FragColor = vec4(clamp(boosted, 0.0, 1.0), 1.0);
+    // Clamp to displayable range
+    o_FragColor = vec4(clamp(boosted, 0.0, 1.0), 1.0);
     })glsl";
 
 #ifdef __ANDROID__
@@ -363,9 +351,13 @@ class OpenGlEs3DistortionRenderer : public DistortionRenderer {
         eye_texture_type_{GL_TEXTURE_2D} {
     const char* fragment_shader;
 
-    switch (config->texture_type) {
+    is_single_pass_ = config->single_pass;
+    switch (config->texture_type)
+    {
       case kGlTexture2D:
-        fragment_shader = kDistortionFragmentShaderTexture2D;
+        fragment_shader = config->single_pass
+        ? kDistortionFragmentShaderTexture2DArray
+        : kDistortionFragmentShaderTexture2D;
         eye_texture_type_ = GL_TEXTURE_2D;
         break;
 #ifdef __ANDROID__
@@ -395,8 +387,14 @@ class OpenGlEs3DistortionRenderer : public DistortionRenderer {
     uniform_texel_size_= glGetUniformLocation(program_, "u_TexelSize");  // vec2
     uniform_sharpen_   = glGetUniformLocation(program_, "u_Sharpen");    // float
 
-    uniform_texture_array_ = glGetUniformLocation(program_, "u_TextureArray"); // sampler2DArray
-    uniform_slice_index_   = glGetUniformLocation(program_, "u_SliceIndex");   // int
+    if (config->single_pass) {
+        uniform_texture_array_ = glGetUniformLocation(program_, "u_TextureArray"); // sampler2DArray
+        uniform_slice_index_ = glGetUniformLocation(program_, "u_SliceIndex");   // int
+    }
+    else
+    {
+        uniform_texture_ = glGetUniformLocation(program_, "u_Texture");
+    }
 
       // Gen buffers, one per eye.
     glGenBuffers(2, &vertices_vbo_[0]);
@@ -404,6 +402,7 @@ class OpenGlEs3DistortionRenderer : public DistortionRenderer {
     glGenBuffers(2, &elements_vbo_[0]);
     CheckGlError("OpenGlEs3DistortionRendererSetUp");
   }
+  //---------------------------------------------------------------------------
 
   ~OpenGlEs3DistortionRenderer() {
     glDeleteBuffers(2, &vertices_vbo_[0]);
@@ -411,6 +410,7 @@ class OpenGlEs3DistortionRenderer : public DistortionRenderer {
     glDeleteBuffers(2, &elements_vbo_[0]);
     CheckGlError("~OpenGlEs3DistortionRenderer");
   }
+    //---------------------------------------------------------------------------
 
   /*
    * Modifies the OpenGL global state. In particular:
@@ -435,6 +435,7 @@ class OpenGlEs3DistortionRenderer : public DistortionRenderer {
     CheckGlError("OpenGlEs3DistortionRenderer::SetMesh");
     elements_count_[eye] = mesh->n_indices;
   }
+    //---------------------------------------------------------------------------
 
   /*
    * Modifies the OpenGL global state. In particular:
@@ -471,21 +472,37 @@ class OpenGlEs3DistortionRenderer : public DistortionRenderer {
 
         glUseProgram(program_);
 
-        // Bind the shared texture array once
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D_ARRAY, static_cast<GLuint>(left_eye->texture));
-        glUniform1i(uniform_texture_array_, 0);
+        if (is_single_pass_)
+        {
+            // Bind the shared texture array once
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D_ARRAY, static_cast<GLuint>(left_eye->texture));
+            glUniform1i(uniform_texture_array_, 0);
 
-        // Render left eye (slice 0)
-        glDisable(GL_SCISSOR_TEST);
-        //glScissor(x, y, width / 2, height);
-        glUniform1i(uniform_slice_index_, 0);
-        RenderDistortionMesh(left_eye, kLeft);
+            // Render left eye (slice 0)
+            glDisable(GL_SCISSOR_TEST);
+            //glScissor(x, y, width / 2, height);
+            glUniform1i(uniform_slice_index_, 0);
+            RenderDistortionMesh(left_eye, kLeft);
 
-        // Render right eye (slice 1)
-        //glScissor(x + width / 2, y, width / 2, height);
-        glUniform1i(uniform_slice_index_, 1);
-        RenderDistortionMesh(right_eye, kRight);
+            // Render right eye (slice 1)
+            //glScissor(x + width / 2, y, width / 2, height);
+            glUniform1i(uniform_slice_index_, 1);
+            RenderDistortionMesh(right_eye, kRight);
+        }
+        else
+        {
+            // Left eye
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(left_eye->texture));
+            glUniform1i(uniform_texture_, 0);
+            RenderDistortionMesh(left_eye, kLeft);
+
+            // Right eye
+            glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(right_eye->texture));
+            glUniform1i(uniform_texture_, 0);
+            RenderDistortionMesh(right_eye, kRight);
+        }
 
         // Cleanup
         glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -494,6 +511,7 @@ class OpenGlEs3DistortionRenderer : public DistortionRenderer {
         glFlush(); // Upload & Execute the command buffer!!!!!
         CheckGlError("RenderEyeToDisplay");
     }
+    //---------------------------------------------------------------------------
 
  private:
   /*
@@ -522,11 +540,20 @@ class OpenGlEs3DistortionRenderer : public DistortionRenderer {
       glVertexAttribPointer(attrib_tex_, 2, GL_FLOAT, false, 0, 0);
       glEnableVertexAttribArray(attrib_tex_);
 
-      // Bind shared texture array and set slice index
       glActiveTexture(GL_TEXTURE0);
-      glBindTexture(GL_TEXTURE_2D_ARRAY, static_cast<GLuint>(eye_description->texture));
-      glUniform1i(uniform_texture_array_, 0);
-      glUniform1i(uniform_slice_index_, (eye == kLeft) ? 0 : 1);
+      if (is_single_pass_)
+      {
+          // Bind shared texture array and set slice index
+          glBindTexture(GL_TEXTURE_2D_ARRAY, static_cast<GLuint>(eye_description->texture));
+          glUniform1i(uniform_texture_array_, 0);
+          glUniform1i(uniform_slice_index_, (eye == kLeft) ? 0 : 1);
+      }
+      else
+      {
+          // Bind 2D texture for this eye
+          glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(eye_description->texture));
+          glUniform1i(uniform_texture_, 0);
+      }
 
       // Distortion UV remap
       CardboardEyeTextureDescription local = *eye_description;
@@ -556,6 +583,7 @@ class OpenGlEs3DistortionRenderer : public DistortionRenderer {
       glDrawElements(GL_TRIANGLE_STRIP, elements_count_[eye], GL_UNSIGNED_INT, 0);
       CheckGlError("OpenGlEs3DistortionRenderer::RenderDistortionMesh");
   }
+  //---------------------------------------------------------------------------
 
   std::array<GLuint, 2> vertices_vbo_;  // One per eye.
   std::array<GLuint, 2> uvs_vbo_;
@@ -572,10 +600,15 @@ class OpenGlEs3DistortionRenderer : public DistortionRenderer {
   GLint uniform_texel_size_;
   GLint uniform_sharpen_;
 
+  // Single Pass
   GLint uniform_texture_array_;
   GLint uniform_slice_index_;
 
+  // Multi Pass
+  GLint uniform_texture_;
+
   GLenum eye_texture_type_;
+  bool is_single_pass_ = false;
 };
 
 }  // namespace cardboard::rendering

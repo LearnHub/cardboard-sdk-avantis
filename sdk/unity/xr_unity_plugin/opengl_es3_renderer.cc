@@ -285,8 +285,9 @@ class OpenGlEs3Renderer : public Renderer {
     CHECKGLERROR("Create texture depth buffer.");
     render_texture->depth_buffer = tmp;
   }
+  //---------------------------------------------------------------------------
 
-    void CreateRenderTextureArray(RenderTexture* render_texture, int width, int height, int layer_count)  override
+  void CreateRenderTextureArray(RenderTexture* render_texture, int width, int height, int layer_count)  override
     {
         // --- Create color buffer as a 2D array texture ---
         GLuint tex = 0;
@@ -343,6 +344,7 @@ class OpenGlEs3Renderer : public Renderer {
         CHECKGLERROR("Create texture array depth buffer.");
         render_texture->depth_buffer = depth_tex;
     }
+  //---------------------------------------------------------------------------
 
   void DestroyRenderTexture(RenderTexture* render_texture) override {
     GLuint tmp = static_cast<GLuint>(render_texture->depth_buffer);

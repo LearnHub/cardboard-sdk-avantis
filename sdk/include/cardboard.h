@@ -139,9 +139,11 @@ typedef struct CardboardEyeTextureDescription {
 } CardboardEyeTextureDescription;
 
 /// Struct to set OpenGL ES distortion renderer configuration.
-typedef struct CardboardOpenGlEsDistortionRendererConfig {
+typedef struct CardboardOpenGlEsDistortionRendererConfig
+{
   /// Texture type.
   CardboardSupportedOpenGlEsTextureType texture_type;
+  bool single_pass;
 } CardboardOpenGlEsDistortionRendererConfig;
 
 /// Struct to set Metal distortion renderer configuration.
