@@ -101,7 +101,7 @@ class CardboardDisplayProvider {
             -> UnitySubsystemErrorCode
             {
                 // Advertise SPI capability immediately
-                rendering_caps->noSinglePassRenderingSupport = false;
+                rendering_caps->noSinglePassRenderingSupport = true;
                 rendering_caps->invalidateRenderStateAfterEachCallback = true;
                 rendering_caps->skipPresentToMainScreen = false;
                 return GetInstance()->GfxThread_Start(rendering_caps);
@@ -153,7 +153,7 @@ class CardboardDisplayProvider {
       ///////!!!!!!!!!!!!!!!!!!!!!!!!!!///////////////////////////////
       ///////!!!!!!!!!!!!!!!!!!!!!!!!!!///////////////////////////////
       ///////!!!!!!!!!!!!!!!!!!!!!!!!!!///////////////////////////////
-    rendering_caps->noSinglePassRenderingSupport = false;
+    rendering_caps->noSinglePassRenderingSupport = true;
 
     rendering_caps->invalidateRenderStateAfterEachCallback = true;
     // Unity will swap buffers for us after GfxThread_SubmitCurrentFrame() is
@@ -170,7 +170,7 @@ class CardboardDisplayProvider {
     cardboard_display_api_->RunRenderingPreProcessing();
     cardboard_display_api_->RenderEyesToDisplay();
     //cardboard_display_api_->RenderWidgets(); // NOT required
-    //cardboard_display_api_->RunRenderingPostProcessing(); // This is empty on all renderers atm.
+    cardboard_display_api_->RunRenderingPostProcessing(); // This is empty on all renderers atm.
     return kUnitySubsystemErrorCodeSuccess;
   }
 
@@ -190,6 +190,7 @@ class CardboardDisplayProvider {
                 CARDBOARD_DISPLAY_XR_TRACE_LOG(trace_, "-----------------------------------------------------------");
                 CARDBOARD_DISPLAY_XR_TRACE_LOG(trace_, "Unity: singlePassRendering = false — fallback to Multi-Pass");
                 CARDBOARD_DISPLAY_XR_TRACE_LOG(trace_, "-----------------------------------------------------------");
+                once_ = true;
             }
             return GfxThread_PopulateNextFrameDesc_MultiPass(frame_hints, next_frame);
         }
