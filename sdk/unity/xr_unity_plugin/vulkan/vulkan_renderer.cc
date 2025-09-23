@@ -69,6 +69,70 @@ class VkSwapchainCache final {
   static int version_;
 };
 
+    namespace hz72Limiter {
+
+        // Monotonic clock
+        static inline int64_t NowNs() {
+            timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+        }
+
+        // State
+        static double  s_refresh_hz    = 72.0;
+        static int64_t s_vsync_ns      = (int64_t)(1000000000.0 / 72.0 + 0.5); // ~13,888,889
+        static int64_t s_last_target   = 0;   // last target deadline in ns
+        static double  s_accum_frac    = 0.0; // fractional accumulator
+
+        inline void SetRefreshHz(double hz) {
+            if (hz > 1.0 && hz < 1000.0) {
+                s_refresh_hz = hz;
+                s_vsync_ns   = (int64_t)(1000000000.0 / hz + 0.5);
+                // Don’t reset s_last_target/s_accum_frac so cadence continues smoothly.
+            }
+        }
+
+        inline void FPSLimit(double target_fps) {
+            if (target_fps <= 0.0) return;
+
+            // Convert FPS to vsyncs per frame, then alternate between floor/ceil.
+            double vsyncs_per_frame = s_refresh_hz / target_fps;
+            int    base_vs     = (int)floor(vsyncs_per_frame);
+            if (base_vs < 1) base_vs = 1;
+            double frac_vs     = vsyncs_per_frame - (double)base_vs;
+
+            int vs_this_frame = base_vs;
+            s_accum_frac += frac_vs;
+            if (s_accum_frac >= 1.0) {
+                vs_this_frame += 1;
+                s_accum_frac -= 1.0;
+            }
+
+            // First call: start from "now"
+            const int64_t now = NowNs();
+            if (s_last_target == 0) {
+                s_last_target = now;
+            }
+
+            // Target time is last target + N vsync intervals
+            const int64_t target = s_last_target + (int64_t)vs_this_frame * s_vsync_ns;
+
+            // Coarse sleep, then fine spin to hit the deadline
+            int64_t dt = target - now;
+            if (dt > 1000000) { // > 1 ms
+                timespec ts{
+                        static_cast<time_t>(dt / 1000000000LL),
+                        static_cast<long>(dt % 1000000000LL)
+                };
+                nanosleep(&ts, nullptr);
+            }
+            while ((target - NowNs()) > 0) { /* busy-wait tail for precision */ }
+
+            // Advance schedule
+            s_last_target = target;
+        }
+    }
+
 VkSwapchainKHR VkSwapchainCache::swapchain_ = VK_NULL_HANDLE;
 int VkSwapchainCache::version_ = 0;
 
@@ -473,6 +537,7 @@ class VulkanRenderer : public Renderer {
     TransitionEyeImagesLayoutFromUnityToDistortionRenderer(
         current_image_left_, current_image_right_);
 
+    hz72Limiter::FPSLimit(144.0);
     CardboardDistortionRenderer_renderEyeToDisplay(
         renderer, reinterpret_cast<uint64_t>(&target_config),
         screen_params.viewport_x, screen_params.viewport_y,

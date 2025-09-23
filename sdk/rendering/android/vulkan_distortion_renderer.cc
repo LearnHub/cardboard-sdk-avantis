@@ -39,6 +39,13 @@
     }                                                                    \
   }
 
+namespace XRRendering {
+    extern int g_full_width;
+    extern int g_full_height;
+    extern float g_eye_internal_scale;
+    extern float g_sharpening_value;
+}
+
 namespace cardboard::rendering {
 
 struct PushConstantsObject {
@@ -46,6 +53,11 @@ struct PushConstantsObject {
   float right_u;
   float top_v;
   float bottom_v;
+  float scale_x;
+  float scale_y;
+  float texel_x;
+  float texel_y;
+  float sharpening;
 };
 
 struct Vertex {
@@ -257,20 +269,19 @@ class VulkanDistortionRenderer : public DistortionRenderer {
 
     VkSamplerCreateInfo sampler{};
     sampler.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    sampler.pNext = nullptr;
-    sampler.magFilter = VK_FILTER_NEAREST;
-    sampler.minFilter = VK_FILTER_NEAREST;
-    sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-    sampler.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    sampler.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    sampler.mipLodBias = 0.0f;
+    sampler.magFilter = VK_FILTER_LINEAR;
+    sampler.minFilter = VK_FILTER_LINEAR;
+    sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    sampler.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     sampler.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
-    sampler.compareOp = VK_COMPARE_OP_NEVER;
-    sampler.minLod = 0.0f;
-    sampler.maxLod = 0.0f;
     sampler.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
     sampler.unnormalizedCoordinates = VK_FALSE;
+    sampler.minLod = 0.0f;
+    sampler.maxLod = VK_LOD_CLAMP_NONE;
+    sampler.mipLodBias = 0.0f;
+    
 
     CALL_VK(
         vkCreateSampler(logical_device_, &sampler, nullptr, &texture_sampler_));
@@ -549,12 +560,21 @@ class VulkanDistortionRenderer : public DistortionRenderer {
       const CardboardEyeTextureDescription* eye_description, CardboardEye eye,
       VkCommandBuffer command_buffer, uint32_t image_index, int x, int y,
       int width, int height) {
-    // Update Push constants.
+
+  const int small_width  = static_cast<int>(XRRendering::g_full_width * XRRendering::g_eye_internal_scale); 
+  const int small_height = static_cast<int>(XRRendering::g_full_height * XRRendering::g_eye_internal_scale);
+
+    // Push constants for vertex shader (distortion UV rect)
     PushConstantsObject push_constants{
-        .left_u = eye_description->left_u,
-        .right_u = eye_description->right_u,
-        .top_v = eye_description->top_v,
-        .bottom_v = eye_description->bottom_v,
+            .left_u   = eye_description->left_u,
+            .right_u  = static_cast<float>(small_width) / static_cast<float>(XRRendering::g_full_width),
+            .top_v    = static_cast<float>(small_height) / static_cast<float>(XRRendering::g_full_height),
+            .bottom_v = eye_description->bottom_v,
+            .scale_x = static_cast<float>(small_width) / static_cast<float>(XRRendering::g_full_width),
+            .scale_y =static_cast<float>(small_height) / static_cast<float>(XRRendering::g_full_height),
+            .texel_x = 1.0f / static_cast<float>(small_width),
+            .texel_y = 1.0f / static_cast<float>(small_height),
+            .sharpening = XRRendering::g_sharpening_value,
     };
     vkCmdPushConstants(command_buffer, pipeline_layout_,
                        VK_SHADER_STAGE_VERTEX_BIT, 0,
