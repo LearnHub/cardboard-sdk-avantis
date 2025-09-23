@@ -147,14 +147,16 @@ const char kWidgetFragmentShaderOpenGlEs3[] =
 #include <stdint.h>
 #include <math.h>
 
-// Monotonic clock
-static inline int64_t NowNs() {
-    timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
-}
 
 namespace hz72Limiter {
+
+    // Monotonic clock
+    static inline int64_t NowNs() {
+        timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+    }
+
     // State
     static double  s_refresh_hz    = 72.0;
     static int64_t s_vsync_ns      = (int64_t)(1000000000.0 / 72.0 + 0.5); // ~13,888,889

@@ -330,7 +330,7 @@ void CardboardDisplayApi::RenderingResourcesSetup(bool isSinglePass)
     // SPI path (GLES3+): single Texture2DArray for color + depth, 2 layers (L/R)
     if (selected_graphics_api_ == kOpenGlEs3 && isSinglePass)
     {
-        LOGE("Single Pass");
+        LOGD("Single Pass Rendering - Initialized");
         // IMPORTANT: CreateRenderTextureArray should allocate with per-eye size:
         // layer_count = 2
         renderer_->CreateRenderTextureArray(&render_textures_[CardboardEye::kLeft],
@@ -357,7 +357,7 @@ void CardboardDisplayApi::RenderingResourcesSetup(bool isSinglePass)
     }
     else //if(isSinglePass == false)
     {
-        LOGE("Multi Pass.");
+        LOGD("Multi Pass Rendering - Initialized");
         // Original multi-pass fallback (e.g., ES2)
         renderer_->CreateRenderTexture(&render_textures_[CardboardEye::kLeft],
                                        screen_params_.viewport_width,

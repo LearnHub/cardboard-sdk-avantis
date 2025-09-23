@@ -61,7 +61,8 @@ namespace {
     R"glsl(#version 300 es
     precision mediump float;
 
-    uniform sampler2D u_Texture;   // <-- single 2D texture
+    uniform sampler2D u_Texture;
+
     uniform vec2  u_Start;
     uniform vec2  u_End;
     uniform vec2  u_Scale;       // low_res_size / full_res_size
@@ -71,81 +72,39 @@ namespace {
     in vec2 v_TexCoords;
     out vec4 o_FragColor;
 
-    // Luma for edge measure (mediump is fine on Adreno 610)
-    mediump float luma(mediump vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
-
     void main() {
-        // Distortion UVs
-        mediump vec2 coords = u_Start + v_TexCoords * (u_End - u_Start);
+    // Distortion UVs with upscaling
+    mediump vec2 coords = u_Start + v_TexCoords * (u_End - u_Start);
+    coords *= u_Scale;
 
-        // Skip scale if 1:1
-        if (u_Scale.x != 1.0 || u_Scale.y != 1.0) {
-            coords *= u_Scale;
-        }
+    // Base sample
+    mediump vec3 c = texture(u_Texture, coords).rgb;
 
-    // Derivatives for anisotropy and explicit LOD control
-    mediump vec2 dxc = dFdx(coords);
-    mediump vec2 dyc = dFdy(coords);
-    mediump float sx = length(dxc);
-    mediump float sy = length(dyc);
-
-    // Small dynamic LOD bias to reduce shimmer in high distortion
-    mediump float aniso = max(sx, sy);
-    mediump float biasScale = 0.25;
-    mediump float bias = clamp((aniso - 1.0) * biasScale, 0.0, 0.5);
-    mediump vec2 dxb = dxc * (1.0 + bias);
-    mediump vec2 dyb = dyc * (1.0 + bias);
-
-    // Base sample from texture
-    mediump vec3 c = textureGrad(u_Texture, coords, dxb, dyb).rgb;
-
-    // Early out if no sharpening requested
+    // Early out if sharpening is disabled
     if (u_Sharpen <= 0.0) {
         o_FragColor = vec4(c, 1.0);
         return;
     }
 
-    // Direction choice for neighbor taps
-    bool horiz = (sx >= sy);
-    mediump vec2 off = horiz ? vec2(0.75 * u_TexelSize.x, 0.0) : vec2(0.0, 0.75 * u_TexelSize.y);
+    // Fixed horizontal offset
+    mediump vec2 off = vec2(0.75 * u_TexelSize.x, 0.0);
 
     // Neighbor samples
-    mediump vec3 a = textureGrad(u_Texture, coords + off, dxb, dyb).rgb;
-    mediump vec3 b = textureGrad(u_Texture, coords - off, dxb, dyb).rgb;
-
-    // Edge measure
-    mediump float g = abs(luma(a) - luma(b));
-    mediump float edgeW = clamp(g * 2.0, 0.0, 1.0);
-
-    // Local variance suppression
-    mediump float variance = abs(luma(c) - 0.5 * (luma(a) + luma(b)));
-    mediump float suppress = clamp(variance * 2.0, 0.0, 1.0);
+    mediump vec3 a = texture(u_Texture, coords + off).rgb;
+    mediump vec3 b = texture(u_Texture, coords - off).rgb;
 
     // Unsharp mask
     mediump vec3 meanAB = 0.5 * (a + b);
     mediump vec3 hf     = c - meanAB;
-
-    // Adaptive sharpening strength
-    mediump float k = u_Sharpen;
-    k *= (1.0 - 0.6 * edgeW);
-    k *= (1.0 - 0.3 * clamp(aniso - 1.0, 0.0, 1.0));
-    k *= (1.0 - 0.4 * suppress); // suppress in noisy regions
-
-    // Local limiter
-    mediump vec3 limit = max(vec3(0.02), 0.75 * abs(c - meanAB));
-    mediump vec3 boosted = c + k * clamp(hf, -limit, limit);
-
-    // Softening for ultra-low scale
-    if (u_Scale.x < 0.5 || u_Scale.y < 0.5) {
-        mediump vec3 blur = 0.25 * (a + b) + 0.5 * c;
-        boosted = mix(boosted, blur, 0.2);
-    }
+    mediump vec3 boosted = c + u_Sharpen * hf;
 
     // Clamp to displayable range
     o_FragColor = vec4(clamp(boosted, 0.0, 1.0), 1.0);
     })glsl";
 
     // Single Pass version
+    // Approx. ~30–40% faster fragment execution compared to the previous full adaptive shader.
+    // Still great results. (See github history for full adaptive shader code ^_^).
     constexpr const char* kDistortionFragmentShaderTexture2DArray =
     R"glsl(#version 300 es
     precision mediump float;
@@ -162,75 +121,31 @@ namespace {
     in vec2 v_TexCoords;
     out vec4 o_FragColor;
 
-    // Luma for edge measure (mediump is fine on Adreno 610)
-    mediump float luma(mediump vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
-
     void main() {
-        // Distortion UVs
-        mediump vec2 coords = u_Start + v_TexCoords * (u_End - u_Start);
+    // Distortion UVs with scale applied
+    mediump vec2 coords = u_Start + v_TexCoords * (u_End - u_Start);
+    coords *= u_Scale;
 
-        // Skip scale if 1:1
-        if (u_Scale.x != 1.0 || u_Scale.y != 1.0) {
-            coords *= u_Scale;
-        }
+    // Base sample
+    mediump vec3 c = texture(u_TextureArray, vec3(coords, float(u_SliceIndex))).rgb;
 
-    // Derivatives for anisotropy and explicit LOD control
-    mediump vec2 dxc = dFdx(coords);
-    mediump vec2 dyc = dFdy(coords);
-    mediump float sx = length(dxc);
-    mediump float sy = length(dyc);
-
-    // Small dynamic LOD bias to reduce shimmer in high distortion
-    mediump float aniso = max(sx, sy);
-    mediump float biasScale = 0.25;
-    mediump float bias = clamp((aniso - 1.0) * biasScale, 0.0, 0.5);
-    mediump vec2 dxb = dxc * (1.0 + bias);
-    mediump vec2 dyb = dyc * (1.0 + bias);
-
-    // Base sample from texture array
-    mediump vec3 c = textureGrad(u_TextureArray, vec3(coords, float(u_SliceIndex)), dxb, dyb).rgb;
-
-    // Early out if no sharpening requested
+    // Early out if sharpening is disabled
     if (u_Sharpen <= 0.0) {
         o_FragColor = vec4(c, 1.0);
         return;
     }
 
-    // Direction choice for neighbor taps
-    bool horiz = (sx >= sy);
-    mediump vec2 off = horiz ? vec2(0.75 * u_TexelSize.x, 0.0) : vec2(0.0, 0.75 * u_TexelSize.y);
+    // Fixed horizontal offset
+    mediump vec2 off = vec2(0.75 * u_TexelSize.x, 0.0);
 
     // Neighbor samples
-    mediump vec3 a = textureGrad(u_TextureArray, vec3(coords + off, float(u_SliceIndex)), dxb, dyb).rgb;
-    mediump vec3 b = textureGrad(u_TextureArray, vec3(coords - off, float(u_SliceIndex)), dxb, dyb).rgb;
-
-    // Edge measure
-    mediump float g = abs(luma(a) - luma(b));
-    mediump float edgeW = clamp(g * 2.0, 0.0, 1.0);
-
-    // Local variance suppression
-    mediump float variance = abs(luma(c) - 0.5 * (luma(a) + luma(b)));
-    mediump float suppress = clamp(variance * 2.0, 0.0, 1.0);
+    mediump vec3 a = texture(u_TextureArray, vec3(coords + off, float(u_SliceIndex))).rgb;
+    mediump vec3 b = texture(u_TextureArray, vec3(coords - off, float(u_SliceIndex))).rgb;
 
     // Unsharp mask
     mediump vec3 meanAB = 0.5 * (a + b);
     mediump vec3 hf     = c - meanAB;
-
-    // Adaptive sharpening strength
-    mediump float k = u_Sharpen;
-    k *= (1.0 - 0.6 * edgeW);
-    k *= (1.0 - 0.3 * clamp(aniso - 1.0, 0.0, 1.0));
-    k *= (1.0 - 0.4 * suppress); // suppress in noisy regions
-
-    // Local limiter
-    mediump vec3 limit = max(vec3(0.02), 0.75 * abs(c - meanAB));
-    mediump vec3 boosted = c + k * clamp(hf, -limit, limit);
-
-    // Optional softening for ultra-low scale
-    if (u_Scale.x < 0.5 || u_Scale.y < 0.5) {
-        mediump vec3 blur = 0.25 * (a + b) + 0.5 * c;
-        boosted = mix(boosted, blur, 0.2);
-    }
+    mediump vec3 boosted = c + u_Sharpen * hf;
 
     // Clamp to displayable range
     o_FragColor = vec4(clamp(boosted, 0.0, 1.0), 1.0);

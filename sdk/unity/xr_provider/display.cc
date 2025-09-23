@@ -100,8 +100,9 @@ class CardboardDisplayProvider {
     gfx_thread_provider.Start = [](UnitySubsystemHandle, void*, UnityXRRenderingCapabilities* rendering_caps)
             -> UnitySubsystemErrorCode
             {
-                // Advertise SPI capability immediately
-                rendering_caps->noSinglePassRenderingSupport = true;
+                // Advertise SPI capability as soon as the Interface is being initialized!
+                // Otherwise, Unity will default to Multi-Pass
+                rendering_caps->noSinglePassRenderingSupport = false;
                 rendering_caps->invalidateRenderStateAfterEachCallback = true;
                 rendering_caps->skipPresentToMainScreen = false;
                 return GetInstance()->GfxThread_Start(rendering_caps);
@@ -147,14 +148,13 @@ class CardboardDisplayProvider {
   void Stop() const {}
 
   void Shutdown() const {}
-  UnitySubsystemErrorCode GfxThread_Start(
-      UnityXRRenderingCapabilities* rendering_caps) const {
-    ///////!!!!!!!!!!!!!!!!!!!!!!!!!!///////////////////////////////
-      ///////!!!!!!!!!!!!!!!!!!!!!!!!!!///////////////////////////////
-      ///////!!!!!!!!!!!!!!!!!!!!!!!!!!///////////////////////////////
-      ///////!!!!!!!!!!!!!!!!!!!!!!!!!!///////////////////////////////
-    rendering_caps->noSinglePassRenderingSupport = true;
-
+  UnitySubsystemErrorCode GfxThread_Start(UnityXRRenderingCapabilities* rendering_caps) const
+  {
+    // Report Single Stereo Pass support
+    if (cardboard_display_api_->GetGraphicsApi() == CardboardGraphicsApi::kOpenGlEs3)
+      rendering_caps->noSinglePassRenderingSupport = false;
+    else
+      rendering_caps->noSinglePassRenderingSupport = true;
     rendering_caps->invalidateRenderStateAfterEachCallback = true;
     // Unity will swap buffers for us after GfxThread_SubmitCurrentFrame() is
     // executed.
@@ -180,7 +180,13 @@ class CardboardDisplayProvider {
     {
         if (frame_hints->appSetup.singlePassRendering)
         {
-            //CARDBOARD_DISPLAY_XR_TRACE_LOG(trace_, "Unity: singlePassRendering = trie");
+            static bool once_ = false;
+            if (!once_) {
+                CARDBOARD_DISPLAY_XR_TRACE_LOG(trace_, "----------------------------------");
+                CARDBOARD_DISPLAY_XR_TRACE_LOG(trace_, "Unity: Single Pass Rendering Mode.");
+                CARDBOARD_DISPLAY_XR_TRACE_LOG(trace_, "----------------------------------");
+                once_ = true;
+            }
             return GfxThread_PopulateNextFrameDesc_SinglePass(frame_hints, next_frame);
         }
         else
@@ -304,23 +310,21 @@ class CardboardDisplayProvider {
       // Initialize texture descriptors.
       for (size_t i = 0; i < texture_descriptors_.size(); ++i)
       {
-        texture_descriptors_[i] = {};
-        //texture_descriptors_[i].width = width_ / 2;
-        //texture_descriptors_[i].height = height_;
-
           // Per-eye base dimensions:
           const int base_eye_w = width_ / 2;
           const int base_eye_h = height_;
-          // Apply internal scale:
-          CARDBOARD_DISPLAY_XR_TRACE_LOG(trace_, "Base eye: %d x %d", width_ /2, height_);
           const int scaled_eye_w = XRRendering::ScaleDim(base_eye_w, XRRendering::g_eye_internal_scale);
           const int scaled_eye_h = XRRendering::ScaleDim(base_eye_h, XRRendering::g_eye_internal_scale);
+          XRRendering::g_full_width = base_eye_w;
+          XRRendering::g_full_height = base_eye_h;
+
+          texture_descriptors_[i] = {};
+          //texture_descriptors_[i].width = width_ / 2;
+          //texture_descriptors_[i].height = height_;
           texture_descriptors_[i].width = scaled_eye_w;
           texture_descriptors_[i].height = scaled_eye_h;
           texture_descriptors_[i].flags = 0;
-
-        texture_descriptors_[i].depthFormat =
-            kUnityXRDepthTextureFormat24bitOrGreater;
+          texture_descriptors_[i].depthFormat = kUnityXRDepthTextureFormat24bitOrGreater;
       }
     }
 
