@@ -50,6 +50,12 @@ android {
         main.proto.includes = ["cardboard_device.proto"]
     }
     namespace 'com.google.cardboard.sdk'
+
+    libraryVariants.all { variant ->
+        variant.outputs.all {
+            outputFileName = "GfxPluginCardboard.aar"
+        }
+    }
 }
 
 protobuf {
