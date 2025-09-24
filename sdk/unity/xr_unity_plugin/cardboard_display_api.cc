@@ -65,6 +65,7 @@ void NSLog(CFStringRef format, ...);
 #endif
 
 namespace XRRendering {
+    extern bool is_single_pass;
     extern float g_eye_internal_scale ;
     extern float g_sharpening_value;
 }
@@ -463,9 +464,9 @@ void CardboardUnity_setGraphicsApi(CardboardGraphicsApi graphics_api) {
           "nor Metal nor Vulkan was selected.");
   }
 }
-
-void CardboardUnity_setRenderParams(float scale, float sharpening)
+void CardboardUnity_setRenderParams(bool isSpi, float scale, float sharpening)
 {
+    XRRendering::is_single_pass = isSpi;
     XRRendering::g_eye_internal_scale = scale;
     XRRendering::g_sharpening_value = sharpening;
 }

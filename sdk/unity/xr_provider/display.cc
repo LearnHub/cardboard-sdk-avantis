@@ -35,6 +35,7 @@
 namespace XRRendering {
     // Internal eye texture scale (0.1–1.0). 0.5 means Unity renders each eye at 50%
     // width/height of the normal per-eye size. Adjust via code or expose a JNI setter.
+    bool is_single_pass = false;
     float g_eye_internal_scale = 1.0f;
     float g_sharpening_value = 0.0f;
     int g_full_width = 0;
@@ -102,7 +103,7 @@ class CardboardDisplayProvider {
             {
                 // Advertise SPI capability as soon as the Interface is being initialized!
                 // Otherwise, Unity will default to Multi-Pass
-                rendering_caps->noSinglePassRenderingSupport = false;
+                rendering_caps->noSinglePassRenderingSupport = !XRRendering::is_single_pass;
                 rendering_caps->invalidateRenderStateAfterEachCallback = true;
                 rendering_caps->skipPresentToMainScreen = false;
                 return GetInstance()->GfxThread_Start(rendering_caps);
@@ -152,7 +153,7 @@ class CardboardDisplayProvider {
   {
     // Report Single Stereo Pass support
     if (cardboard_display_api_->GetGraphicsApi() == CardboardGraphicsApi::kOpenGlEs3)
-      rendering_caps->noSinglePassRenderingSupport = false;
+      rendering_caps->noSinglePassRenderingSupport = !XRRendering::is_single_pass;
     else
       rendering_caps->noSinglePassRenderingSupport = true;
     rendering_caps->invalidateRenderStateAfterEachCallback = true;
@@ -170,7 +171,7 @@ class CardboardDisplayProvider {
     cardboard_display_api_->RunRenderingPreProcessing();
     cardboard_display_api_->RenderEyesToDisplay();
     //cardboard_display_api_->RenderWidgets(); // NOT required
-    cardboard_display_api_->RunRenderingPostProcessing(); // This is empty on all renderers atm.
+    cardboard_display_api_->RunRenderingPostProcessing(); // Vulkan uses this
     return kUnitySubsystemErrorCodeSuccess;
   }
 
@@ -178,25 +179,27 @@ class CardboardDisplayProvider {
             const UnityXRFrameSetupHints* frame_hints,
             UnityXRNextFrameDesc* next_frame)
     {
+        static bool once_sp_ = false;
+        static bool once_mp_ = false;
         if (frame_hints->appSetup.singlePassRendering)
         {
-            static bool once_ = false;
-            if (!once_) {
+            if (!once_sp_) {
                 CARDBOARD_DISPLAY_XR_TRACE_LOG(trace_, "----------------------------------");
                 CARDBOARD_DISPLAY_XR_TRACE_LOG(trace_, "Unity: Single Pass Rendering Mode.");
                 CARDBOARD_DISPLAY_XR_TRACE_LOG(trace_, "----------------------------------");
-                once_ = true;
+                once_sp_ = true;
+                once_mp_ = false;
             }
             return GfxThread_PopulateNextFrameDesc_SinglePass(frame_hints, next_frame);
         }
         else
         {
-            static bool once_ = false;
-            if (!once_) {
+            if (!once_mp_) {
                 CARDBOARD_DISPLAY_XR_TRACE_LOG(trace_, "-----------------------------------------------------------");
                 CARDBOARD_DISPLAY_XR_TRACE_LOG(trace_, "Unity: singlePassRendering = false — fallback to Multi-Pass");
                 CARDBOARD_DISPLAY_XR_TRACE_LOG(trace_, "-----------------------------------------------------------");
-                once_ = true;
+                once_mp_ = true;
+                once_sp_ = false;
             }
             return GfxThread_PopulateNextFrameDesc_MultiPass(frame_hints, next_frame);
         }
