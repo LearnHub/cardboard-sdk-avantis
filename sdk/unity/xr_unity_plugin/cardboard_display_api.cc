@@ -386,12 +386,18 @@ void CardboardDisplayApi::RenderingResourcesSetup(bool isSinglePass)
 //---------------------------------------------------------------------------
 
 void CardboardDisplayApi::RenderingResourcesTeardown() {
-  if (render_textures_[0].color_buffer == 0) {
-    return;
-  }
-  renderer_->DestroyRenderTexture(&render_textures_[CardboardEye::kLeft]);
-  renderer_->DestroyRenderTexture(&render_textures_[CardboardEye::kRight]);
-  renderer_->TeardownWidgets();
+    if (render_textures_[0].color_buffer == 0) return;
+
+    renderer_->DestroyRenderTexture(&render_textures_[CardboardEye::kLeft]);
+
+    // Right eye aliases the array in single-pass — don’t destroy twice
+    if (!(selected_graphics_api_ == kOpenGlEs3 && XRRendering::is_single_pass)) {
+        renderer_->DestroyRenderTexture(&render_textures_[CardboardEye::kRight]);
+    }
+
+    renderer_->TeardownWidgets();
+    render_textures_[CardboardEye::kLeft] = {};
+    render_textures_[CardboardEye::kRight] = {};
 }
 
 Renderer::ScreenParams CardboardDisplayApi::ScreenParamsToRendererScreenParams(

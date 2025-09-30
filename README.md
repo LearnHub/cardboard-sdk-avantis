@@ -1,3 +1,12 @@
+Avantis Custom Cardboard SDK
+===================================================
+This branch, "develop", holds the code for Avantis' modified Cardboard SDK that supports Single Pass Rendering.
+
+For the upstream/original cardboard code, see the "master" branch.
+
+Original Readme:
+================
+
 Cardboard SDK
 =============
 Copyright 2019 Google LLC

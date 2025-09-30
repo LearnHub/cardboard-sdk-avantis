@@ -103,7 +103,7 @@ class CardboardDisplayProvider {
             {
                 // Advertise SPI capability as soon as the Interface is being initialized!
                 // Otherwise, Unity will default to Multi-Pass
-                rendering_caps->noSinglePassRenderingSupport = !XRRendering::is_single_pass;
+                rendering_caps->noSinglePassRenderingSupport = false;
                 rendering_caps->invalidateRenderStateAfterEachCallback = true;
                 rendering_caps->skipPresentToMainScreen = false;
                 return GetInstance()->GfxThread_Start(rendering_caps);
@@ -181,7 +181,9 @@ class CardboardDisplayProvider {
     {
         static bool once_sp_ = false;
         static bool once_mp_ = false;
-        if (frame_hints->appSetup.singlePassRendering)
+        // Unity has the habit of starting in Multi-Pass and then Switch to Single-Pass
+        // Enforce Single Pass when selected!
+        if (frame_hints->appSetup.singlePassRendering || XRRendering::is_single_pass)
         {
             if (!once_sp_) {
                 CARDBOARD_DISPLAY_XR_TRACE_LOG(trace_, "----------------------------------");
@@ -195,9 +197,9 @@ class CardboardDisplayProvider {
         else
         {
             if (!once_mp_) {
-                CARDBOARD_DISPLAY_XR_TRACE_LOG(trace_, "-----------------------------------------------------------");
-                CARDBOARD_DISPLAY_XR_TRACE_LOG(trace_, "Unity: singlePassRendering = false — fallback to Multi-Pass");
-                CARDBOARD_DISPLAY_XR_TRACE_LOG(trace_, "-----------------------------------------------------------");
+                CARDBOARD_DISPLAY_XR_TRACE_LOG(trace_, "----------------------------------");
+                CARDBOARD_DISPLAY_XR_TRACE_LOG(trace_, "Unity: Multi Pass Rendering Mode.");
+                CARDBOARD_DISPLAY_XR_TRACE_LOG(trace_, "----------------------------------");
                 once_mp_ = true;
                 once_sp_ = false;
             }
@@ -277,6 +279,7 @@ class CardboardDisplayProvider {
         }
 
         // One culling pass for both eyes
+        next_frame->renderPasses[0].cullingPassIndex = 0;
         next_frame->cullingPasses[0].deviceAnchorToCullingPose = next_frame->renderPasses[0].renderParams[0].deviceAnchorToEyePose;
         next_frame->cullingPasses[0].projection = next_frame->renderPasses[0].renderParams[0].projection;
         next_frame->cullingPasses[0].separation = kCullingSphereDiameter;
