@@ -147,103 +147,78 @@ struct DeviceGyroscopeSensor::SensorInfo {
   std::unique_ptr<SensorEventQueueReader> reader;
 };
 
-namespace {
+    namespace {
 
-    // Persistent state
-    static float g_gyro_bias[3]      = {0.0f, 0.0f, 0.0f};
-    static float g_bias_smooth_alpha = 0.05f;
+        bool ParseGyroEvent(const ASensorEvent& event, GyroscopeData* sample) {
+            if (!sample) return false;
 
-    static float g_gyro_smoothed[3]  = {0.0f, 0.0f, 0.0f};
-    static bool  g_has_smoothed      = false;
-
-	// Median filter history (3 samples per axis)
-    static float g_hist_x[3] = {0}, g_hist_y[3] = {0}, g_hist_z[3] = {0};
-    static int   g_hist_idx  = 0;
-
-    static inline float median3(float a, float b, float c) {
-        if (a > b) { float t = a; a = b; b = t; }
-        if (b > c) { float t = b; b = c; c = t; }
-        if (a > b) { float t = a; a = b; b = t; }
-        return b;
-    }
-
-    bool ParseGyroEvent(const ASensorEvent& event, GyroscopeData* sample)
-    {
-        if (!sample) return false;
-
-        // Handle calibration/bias updates
-        if (event.type == ASENSOR_TYPE_ADDITIONAL_INFO)
-        {
-            if (event.additional_info.type == ASENSOR_ADDITIONAL_INFO_VEC3_CALIBRATION)
-            {
-                // Smooth bias updates
-                for (int i = 0; i < 3; ++i)
-                {
-                    float new_bias = event.additional_info.data_float[i];
-                    g_gyro_bias[i] = g_bias_smooth_alpha * new_bias + (1.0f - g_bias_smooth_alpha) * g_gyro_bias[i];
-                }
-                CARDBOARD_LOGI("Updated gyro bias: %.6f, %.6f, %.6f", g_gyro_bias[0], g_gyro_bias[1], g_gyro_bias[2]);
+            if (event.type == ASENSOR_TYPE_ADDITIONAL_INFO) {
+                // Ignore calibration / extra info events
+                return false;
             }
-            // Not a real sample
+
+            sample->sensor_timestamp_ns = event.timestamp;
+            sample->system_timestamp    = event.timestamp;
+
+            if (event.type == ASENSOR_TYPE_GYROSCOPE ||
+                event.type == ASENSOR_TYPE_GYROSCOPE_UNCALIBRATED) {
+
+                // --- BEGIN FILTER STATE ---
+                static float hist_x[3], hist_y[3], hist_z[3];
+                static int idx = 0;
+                static bool filled = false;
+
+                static float ema_x = 0, ema_y = 0, ema_z = 0;
+                static bool has_ema = false;
+                const float alpha = 0.25f; // EMA smoothing factor (0.2–0.3 is a good range)
+                // --- END FILTER STATE ---
+
+                // Store new sample in circular buffer
+                hist_x[idx] = event.vector.x;
+                hist_y[idx] = event.vector.y;
+                hist_z[idx] = event.vector.z;
+                idx = (idx + 1) % 3;
+                if (idx == 0) filled = true;
+
+                // Median of up to 3 samples
+                auto median3 = [](float a, float b, float c) {
+                    if (a > b) std::swap(a,b);
+                    if (b > c) std::swap(b,c);
+                    if (a > b) std::swap(a,b);
+                    return b;
+                };
+
+                float x, y, z;
+                if (filled) {
+                    x = median3(hist_x[0], hist_x[1], hist_x[2]);
+                    y = median3(hist_y[0], hist_y[1], hist_y[2]);
+                    z = median3(hist_z[0], hist_z[1], hist_z[2]);
+                } else {
+                    // Not enough history yet, just use raw
+                    x = event.vector.x;
+                    y = event.vector.y;
+                    z = event.vector.z;
+                }
+
+                // Apply EMA smoothing
+                if (has_ema) {
+                    ema_x = alpha * x + (1.0f - alpha) * ema_x;
+                    ema_y = alpha * y + (1.0f - alpha) * ema_y;
+                    ema_z = alpha * z + (1.0f - alpha) * ema_z;
+                } else {
+                    ema_x = x; ema_y = y; ema_z = z;
+                    has_ema = true;
+                }
+
+                sample->data = {ema_x, ema_y, ema_z};
+                return true;
+            }
+
+            CARDBOARD_LOGE("ParseGyroEvent discarding unexpected sensor event type %d",
+                           event.type);
             return false;
         }
-
-        // Common timestamps
-        sample->sensor_timestamp_ns = event.timestamp;
-        sample->system_timestamp    = event.timestamp;
-
-        if (event.type == ASENSOR_TYPE_GYROSCOPE || event.type == ASENSOR_TYPE_GYROSCOPE_UNCALIBRATED)
-        {
-
-            // Bias‑corrected raw
-            float x = event.vector.x - g_gyro_bias[0];
-            float y = event.vector.y - g_gyro_bias[1];
-            float z = event.vector.z - g_gyro_bias[2];
-
-            // Median filter to reject spikes
-            g_hist_x[g_hist_idx] = x;
-            g_hist_y[g_hist_idx] = y;
-            g_hist_z[g_hist_idx] = z;
-            g_hist_idx = (g_hist_idx + 1) % 3;
-
-            x = median3(g_hist_x[0], g_hist_x[1], g_hist_x[2]);
-            y = median3(g_hist_y[0], g_hist_y[1], g_hist_y[2]);
-            z = median3(g_hist_z[0], g_hist_z[1], g_hist_z[2]);
-
-            // Adaptive EMA smoothing based on angular speed
-            // crude magnitude
-            float speed = fabsf(x) + fabsf(y) + fabsf(z);
-            // heavier smoothing when still
-            float alpha = (speed < 0.05f) ? 0.05f : 0.25f; 
-
-            if (!g_has_smoothed)
-            {
-                g_gyro_smoothed[0] = x;
-                g_gyro_smoothed[1] = y;
-                g_gyro_smoothed[2] = z;
-                g_has_smoothed = true;
-            }
-            else
-            {
-                g_gyro_smoothed[0] = alpha * x + (1.0f - alpha) * g_gyro_smoothed[0];
-                g_gyro_smoothed[1] = alpha * y + (1.0f - alpha) * g_gyro_smoothed[1];
-                g_gyro_smoothed[2] = alpha * z + (1.0f - alpha) * g_gyro_smoothed[2];
-            }
-
-            sample->data[0] = g_gyro_smoothed[0];
-            sample->data[1] = g_gyro_smoothed[1];
-            sample->data[2] = g_gyro_smoothed[2];
-
-            return true;
-        }
-
-        CARDBOARD_LOGE("ParseGyroEvent discarding unexpected sensor event type %d", event.type);
-        return false;
     }
-
-
-
-}  // namespace
 
 DeviceGyroscopeSensor::DeviceGyroscopeSensor()
     : sensor_info_(new SensorInfo()) {
