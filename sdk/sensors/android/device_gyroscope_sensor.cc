@@ -147,78 +147,36 @@ struct DeviceGyroscopeSensor::SensorInfo {
   std::unique_ptr<SensorEventQueueReader> reader;
 };
 
-    namespace {
+namespace {
 
-        bool ParseGyroEvent(const ASensorEvent& event, GyroscopeData* sample) {
-            if (!sample) return false;
+bool ParseGyroEvent(const ASensorEvent& event, GyroscopeData* sample) {
+  if (event.type == ASENSOR_TYPE_ADDITIONAL_INFO) {
+    CARDBOARD_LOGI("ParseGyroEvent discarding additional info sensor event");
+    return false;
+  }
 
-            if (event.type == ASENSOR_TYPE_ADDITIONAL_INFO) {
-                // Ignore calibration / extra info events
-                return false;
-            }
+  sample->sensor_timestamp_ns = event.timestamp;
+  sample->system_timestamp = event.timestamp;  // Clock::time_point();
+  // The event values in ASensorEvent (event, acceleration and
+  // magnetic) are all in the same union type so they can be
+  // accessed by event.
+  if (event.type == ASENSOR_TYPE_GYROSCOPE) {
+    sample->data = {event.vector.x, event.vector.y, event.vector.z};
+    return true;
+  } else if (event.type == ASENSOR_TYPE_GYROSCOPE_UNCALIBRATED) {
+    // This is a special case when it is possible to initialize to
+    // ASENSOR_TYPE_GYROSCOPE_UNCALIBRATED
+    sample->data = {event.vector.x, event.vector.y, event.vector.z};
+    return true;
+  } else {
+    CARDBOARD_LOGE("ParseGyroEvent discarding unexpected sensor event type %d",
+                   event.type);
+  }
 
-            sample->sensor_timestamp_ns = event.timestamp;
-            sample->system_timestamp    = event.timestamp;
+  return false;
+}
 
-            if (event.type == ASENSOR_TYPE_GYROSCOPE ||
-                event.type == ASENSOR_TYPE_GYROSCOPE_UNCALIBRATED) {
-
-                // --- BEGIN FILTER STATE ---
-                static float hist_x[3], hist_y[3], hist_z[3];
-                static int idx = 0;
-                static bool filled = false;
-
-                static float ema_x = 0, ema_y = 0, ema_z = 0;
-                static bool has_ema = false;
-                const float alpha = 0.25f; // EMA smoothing factor (0.2–0.3 is a good range)
-                // --- END FILTER STATE ---
-
-                // Store new sample in circular buffer
-                hist_x[idx] = event.vector.x;
-                hist_y[idx] = event.vector.y;
-                hist_z[idx] = event.vector.z;
-                idx = (idx + 1) % 3;
-                if (idx == 0) filled = true;
-
-                // Median of up to 3 samples
-                auto median3 = [](float a, float b, float c) {
-                    if (a > b) std::swap(a,b);
-                    if (b > c) std::swap(b,c);
-                    if (a > b) std::swap(a,b);
-                    return b;
-                };
-
-                float x, y, z;
-                if (filled) {
-                    x = median3(hist_x[0], hist_x[1], hist_x[2]);
-                    y = median3(hist_y[0], hist_y[1], hist_y[2]);
-                    z = median3(hist_z[0], hist_z[1], hist_z[2]);
-                } else {
-                    // Not enough history yet, just use raw
-                    x = event.vector.x;
-                    y = event.vector.y;
-                    z = event.vector.z;
-                }
-
-                // Apply EMA smoothing
-                if (has_ema) {
-                    ema_x = alpha * x + (1.0f - alpha) * ema_x;
-                    ema_y = alpha * y + (1.0f - alpha) * ema_y;
-                    ema_z = alpha * z + (1.0f - alpha) * ema_z;
-                } else {
-                    ema_x = x; ema_y = y; ema_z = z;
-                    has_ema = true;
-                }
-
-                sample->data = {ema_x, ema_y, ema_z};
-                return true;
-            }
-
-            CARDBOARD_LOGE("ParseGyroEvent discarding unexpected sensor event type %d",
-                           event.type);
-            return false;
-        }
-    }
+}  // namespace
 
 DeviceGyroscopeSensor::DeviceGyroscopeSensor()
     : sensor_info_(new SensorInfo()) {

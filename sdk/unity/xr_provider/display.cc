@@ -40,6 +40,7 @@ namespace XRRendering {
     float g_sharpening_value = 0.0f;
     int g_full_width = 0;
     int g_full_height = 0;
+    bool g_isSRGB = false;
 
     static inline int ScaleDim(int v, float s)
     {
@@ -214,6 +215,7 @@ class CardboardDisplayProvider {
     {
         if ((frame_hints->changedFlags & kUnityXRFrameSetupHintsChangedTextureResolutionScale) != 0 || !is_initialized_ || cardboard::unity::CardboardDisplayApi::GetDeviceParametersChanged())
         {
+            XRRendering::g_isSRGB = frame_hints->appSetup.sRGB;
             CARDBOARD_DISPLAY_XR_TRACE_LOG(trace_, "Initializes Cardboard API.");
             cardboard_display_api_.reset(new cardboard::unity::CardboardDisplayApi());
 

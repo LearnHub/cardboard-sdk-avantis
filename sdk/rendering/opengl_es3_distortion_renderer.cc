@@ -107,49 +107,45 @@ namespace {
     // Still great results. (See github history for full adaptive shader code ^_^).
     constexpr const char* kDistortionFragmentShaderTexture2DArray =
     R"glsl(#version 300 es
-    precision mediump float;
+precision mediump float;
 
-    uniform sampler2DArray u_TextureArray;
-    uniform int   u_SliceIndex;
+uniform sampler2DArray u_TextureArray;
+uniform int   u_SliceIndex;
 
-    uniform vec2  u_Start;
-    uniform vec2  u_End;
-    uniform vec2  u_Scale;       // low_res_size / full_res_size
-    uniform vec2  u_TexelSize;   // 1.0 / low_res_size
-    uniform float u_Sharpen;     // 0.0..~0.35
+uniform vec2  u_Start;
+uniform vec2  u_End;
+uniform vec2  u_Scale;       // low_res_size / full_res_size
+uniform vec2  u_TexelSize;   // 1.0 / low_res_size
+uniform float u_Sharpen;     // 0.0..~0.35
 
-    in vec2 v_TexCoords;
-    out vec4 o_FragColor;
+in vec2 v_TexCoords;
+out vec4 o_FragColor;
 
-    void main() {
+void main() {
     // Distortion UVs with scale applied
-    mediump vec2 coords = u_Start + v_TexCoords * (u_End - u_Start);
+    vec2 coords = u_Start + v_TexCoords * (u_End - u_Start);
     coords *= u_Scale;
 
     // Base sample
-    mediump vec3 c = texture(u_TextureArray, vec3(coords, float(u_SliceIndex))).rgb;
+    vec3 c = texture(u_TextureArray, vec3(coords, float(u_SliceIndex))).rgb;
 
-    // Early out if sharpening is disabled
-    if (u_Sharpen <= 0.0) {
-        o_FragColor = vec4(c, 1.0);
-        return;
+    // Optional sharpening
+    if (u_Sharpen > 0.0) {
+        vec2 off = vec2(0.75 * u_TexelSize.x, 0.0);
+        vec3 a = texture(u_TextureArray, vec3(coords + off, float(u_SliceIndex))).rgb;
+        vec3 b = texture(u_TextureArray, vec3(coords - off, float(u_SliceIndex))).rgb;
+        vec3 meanAB  = 0.5 * (a + b);
+        vec3 hf      = c - meanAB;
+        c = c + u_Sharpen * hf;
     }
 
-    // Fixed horizontal offset
-    mediump vec2 off = vec2(0.75 * u_TexelSize.x, 0.0);
+    // Clamp to [0,1]
+    c = clamp(c, 0.0, 1.0);
+    // Apply gamma *encoding*
+    vec3 gammaEncoded = pow(c, vec3(2.2));
 
-    // Neighbor samples
-    mediump vec3 a = texture(u_TextureArray, vec3(coords + off, float(u_SliceIndex))).rgb;
-    mediump vec3 b = texture(u_TextureArray, vec3(coords - off, float(u_SliceIndex))).rgb;
-
-    // Unsharp mask
-    mediump vec3 meanAB = 0.5 * (a + b);
-    mediump vec3 hf     = c - meanAB;
-    mediump vec3 boosted = c + u_Sharpen * hf;
-
-    // Clamp to displayable range
-    o_FragColor = vec4(clamp(boosted, 0.0, 1.0), 1.0);
-    })glsl";
+    o_FragColor = vec4(gammaEncoded, 1.0);
+})glsl";
 
 #ifdef __ANDROID__
 constexpr const char* kDistortionFragmentShaderTextureExternalOes =

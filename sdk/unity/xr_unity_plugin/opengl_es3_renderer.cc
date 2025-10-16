@@ -26,6 +26,10 @@
 // @def Forwards the call to CheckGlError().
 #define CHECKGLERROR(label) CheckGlError(__FILE__, __LINE__, label)
 
+namespace XRRendering {
+    extern bool g_isSRGB;
+}
+
 namespace cardboard::unity {
 namespace {
 
@@ -273,8 +277,11 @@ class OpenGlEs3Renderer : public Renderer {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, screen_width / 2, screen_height, 0,
-                 GL_RGB, GL_UNSIGNED_BYTE, 0);
+
+    GLint internalFormat = XRRendering::g_isSRGB ?  GL_SRGB8_ALPHA8 :GL_RGB;
+    GLint format = XRRendering::g_isSRGB ?  GL_RGBA :GL_RGB;
+    glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, screen_width / 2, screen_height, 0,
+                 format, GL_UNSIGNED_BYTE, 0);
     CHECKGLERROR("Create texture color buffer.");
     render_texture->color_buffer = tmp;
 
@@ -301,17 +308,20 @@ class OpenGlEs3Renderer : public Renderer {
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
+        GLint internalFormat = XRRendering::g_isSRGB ?  GL_SRGB8_ALPHA8 :GL_RGB;
+        GLint format = XRRendering::g_isSRGB ?  GL_RGBA :GL_RGB;
+
         // Allocate storage for all layers (no data upload yet)
         glTexImage3D(GL_TEXTURE_2D_ARRAY,
                      0,                      // mip level
-                     GL_RGB,                 // internal format
+                     internalFormat,               // internal format
                      width / 2,
                      height,
                      layer_count,            // depth = number of slices
-                     0,                      // border
-                     GL_RGB,                 // format
+                     0,                     // border
+                     format,                       // format
                      GL_UNSIGNED_BYTE,       // type
-                     nullptr);               // no initial data
+                     nullptr);              // no initial data
 
         CHECKGLERROR("Create texture array color buffer.");
         render_texture->color_buffer = tex;

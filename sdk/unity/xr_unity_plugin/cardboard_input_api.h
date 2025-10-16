@@ -53,10 +53,6 @@ class CardboardInputApi {
   // TODO(b/154305848): Move argument types to std::array*.
   void GetHeadTrackerPose(float* position, float* orientation);
 
-    CardboardHeadTracker* GetHeadTracker() const {
-        return head_tracker_.get();
-    }
-
   /// @brief Sets the viewport orientation that will be used.
   /// @param viewport_orientation one of the possible orientations of the
   /// viewport.
@@ -82,7 +78,7 @@ class CardboardInputApi {
   static int64_t GetBootTimeNano();
 
   // @brief Default prediction excess time in nano seconds.
-  static constexpr int64_t kPredictionTimeWithoutVsyncNanos = 11000000;
+  static constexpr int64_t kPredictionTimeWithoutVsyncNanos = 50000000;
 
   // @brief Constant to convert seconds into nano seconds.
   static constexpr int64_t kNanosInSeconds = 1000000000;
