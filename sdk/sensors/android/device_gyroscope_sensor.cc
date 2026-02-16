@@ -75,11 +75,13 @@ static const ASensor* GetUncalibratedGyroscope(ASensorManager* sensor_manager) {
 }
 
 const ASensor* InitSensor(ASensorManager* sensor_manager) {
-  const ASensor* gyro = GetUncalibratedGyroscope(sensor_manager);
-  if (gyro != nullptr) {
-    CARDBOARD_LOGI("Android Gyro Sensor: ASENSOR_TYPE_GYRO_UNCALIBRATED");
-    return gyro;
-  }
+  // Use the calibrated gyroscope (TYPE_GYROSCOPE) rather than
+  // TYPE_GYROSCOPE_UNCALIBRATED.  The uncalibrated sensor requires the SDK's
+  // own GyroscopeBiasEstimator to subtract the raw bias, but that estimator
+  // can converge to incorrect values on certain devices and inject drift.
+  // The calibrated sensor lets the platform HAL handle bias removal, which
+  // matches the approach used by OrientationEKF / FusionHeadTracker and
+  // works reliably across ClassVR hardware.
   CARDBOARD_LOGI("Android Gyro Sensor: ASENSOR_TYPE_GYROSCOPE");
   return ASensorManager_getDefaultSensor(sensor_manager,
                                          ASENSOR_TYPE_GYROSCOPE);
@@ -151,7 +153,7 @@ namespace {
 
 bool ParseGyroEvent(const ASensorEvent& event, GyroscopeData* sample) {
   if (event.type == ASENSOR_TYPE_ADDITIONAL_INFO) {
-    CARDBOARD_LOGI("ParseGyroEvent discarding additional info sensor event");
+    //CARDBOARD_LOGI("ParseGyroEvent discarding additional info sensor event");
     return false;
   }
 
