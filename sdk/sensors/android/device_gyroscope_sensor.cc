@@ -153,7 +153,7 @@ namespace {
 
 bool ParseGyroEvent(const ASensorEvent& event, GyroscopeData* sample) {
   if (event.type == ASENSOR_TYPE_ADDITIONAL_INFO) {
-    CARDBOARD_LOGI("ParseGyroEvent discarding additional info sensor event");
+    //CARDBOARD_LOGI("ParseGyroEvent discarding additional info sensor event");
     return false;
   }
 
