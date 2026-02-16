@@ -219,24 +219,16 @@ void SensorFusionEkf::ProcessGyroscopeSample(const GyroscopeData& sample) {
       FilterGyroscopeTimestep(current_timestep_s);
     }
 
-    // { Process gyroscope bias estimation
-    gyroscope_bias_estimator_.ProcessGyroscope(sample.data,
-                                               sample.sensor_timestamp_ns);
-
-    if (gyroscope_bias_estimator_.IsCurrentEstimateValid()) {
-      // As soon as the device is considered to be static, the bias estimator
-      // should have a precise estimate of the gyroscope bias.
-      gyroscope_bias_estimate_ = gyroscope_bias_estimator_.GetGyroscopeBias();
-    }
-    // }
+    // Gyroscope bias estimation is disabled.  We now use the platform-
+    // calibrated gyroscope (TYPE_GYROSCOPE) instead of the uncalibrated
+    // sensor, so the HAL handles bias removal.  The SDK's own
+    // GyroscopeBiasEstimator was found to converge to incorrect values on
+    // certain ClassVR devices, injecting drift into the orientation.
 
     // Only integrate after receiving a accelerometer sample.
     if (is_aligned_with_gravity_) {
       const Rotation rotation_from_gyroscope = GetRotationFromGyroscope(
-          {sample.data[0] - gyroscope_bias_estimate_[0],
-           sample.data[1] - gyroscope_bias_estimate_[1],
-           sample.data[2] - gyroscope_bias_estimate_[2]},
-          current_timestep_s);
+          sample.data, current_timestep_s);
       current_state_.sensor_from_start_rotation =
           rotation_from_gyroscope * current_state_.sensor_from_start_rotation;
       UpdateStateCovariance(RotationMatrixNH(rotation_from_gyroscope));
@@ -251,7 +243,7 @@ void SensorFusionEkf::ProcessGyroscopeSample(const GyroscopeData& sample) {
   current_gyroscope_sensor_timestamp_ns_ = sample.sensor_timestamp_ns;
 
   if (velocity_filter_ != nullptr) {
-    velocity_filter_->AddSample(sample.data - gyroscope_bias_estimate_,
+    velocity_filter_->AddSample(sample.data,
                                 current_gyroscope_sensor_timestamp_ns_);
 
     if (velocity_filter_->IsInitialized()) {
@@ -261,9 +253,7 @@ void SensorFusionEkf::ProcessGyroscopeSample(const GyroscopeData& sample) {
     }
   } else {
     current_state_.sensor_from_start_rotation_velocity.Set(
-        sample.data[0] - gyroscope_bias_estimate_[0],
-        sample.data[1] - gyroscope_bias_estimate_[1],
-        sample.data[2] - gyroscope_bias_estimate_[2]);
+        sample.data[0], sample.data[1], sample.data[2]);
   }
 }
 
@@ -313,10 +303,6 @@ void SensorFusionEkf::ProcessAccelerometerSample(
   accelerometer_measurement_.Set(sample.data[0], sample.data[1],
                                  sample.data[2]);
   current_accelerometer_sensor_timestamp_ns_ = sample.sensor_timestamp_ns;
-
-  // Process gyroscope bias estimation.
-  gyroscope_bias_estimator_.ProcessAccelerometer(sample.data,
-                                                 sample.sensor_timestamp_ns);
 
   if (!is_aligned_with_gravity_) {
     // This is the first accelerometer measurement so it initializes the
