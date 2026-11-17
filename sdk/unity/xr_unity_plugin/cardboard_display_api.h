@@ -123,6 +123,20 @@ class CardboardDisplayApi {
   ///     using Metal, the returned value is zero.
   uint64_t GetRightTextureDepthBufferId();
 
+  /// @brief AVN: Whether the eyes are drawn into a rotating set of textures
+  ///        for the reprojection to present, instead of one set that is
+  ///        drawn to the display each frame.
+  /// @pre UpdateDeviceParams() must have been successfully called.
+  bool IsReprojecting() const { return texture_set_count_ > 1; }
+
+  /// @brief AVN: When reprojecting, moves on to a set of eye textures that is
+  ///        free to be drawn into. The texture getters then return that set.
+  /// @pre It must be called from the rendering thread.
+  void AdvanceTextureSet();
+
+  /// @brief AVN: The index of the set of eye textures in use.
+  int GetTextureSet() const { return texture_set_; }
+
   /// @brief Gets the rectangle size in pixels to draw into.
   ///
   /// @param[out] width Pointer to an int to load the width in pixels of the
@@ -266,8 +280,30 @@ class CardboardDisplayApi {
   //          `CardboardEye::kRight` holds the right eye data.
   std::array<EyeData, 2> eye_data_;
 
-  // @brief Holds the render texture information for each eye.
+  // @brief Holds the render texture information for each eye: the set of
+  // textures in use.
   std::array<Renderer::RenderTexture, 2> render_textures_;
+
+  // @brief AVN: Most sets of eye textures there can be (see reprojection.h).
+  static constexpr int kMaxTextureSets = 3;
+
+  // @brief AVN: Every set of eye textures: one, or kMaxTextureSets when
+  // reprojecting.
+  std::array<std::array<Renderer::RenderTexture, 2>, kMaxTextureSets>
+      texture_sets_;
+
+  // @brief AVN: How many of texture_sets_ are allocated.
+  int texture_set_count_ = 0;
+
+  // @brief AVN: Which of texture_sets_ render_textures_ is.
+  int texture_set_ = 0;
+
+  // @brief AVN: Whether the eye textures are two-layer arrays (single pass),
+  // in which case both eyes of a set name the same texture.
+  bool textures_are_arrays_ = false;
+
+  // @brief AVN: Makes a set of eye textures the one in use.
+  void SelectTextureSet(int set);
 
   // @brief Manages the rendering elements lifecycle.
   std::unique_ptr<Renderer> renderer_;
@@ -341,6 +377,14 @@ void CardboardUnity_setDeviceParametersChanged();
 void CardboardUnity_setGraphicsApi(CardboardGraphicsApi graphics_api);
 
 void CardboardUnity_setRenderParams(bool isSPI, float scale, float sharpening);
+
+/// @brief AVN: Sets whether the Unity project asks for reprojection (see
+///        unity/android/reprojection.h). A setting on the device can override
+///        it.
+/// @details It is expected to be called at CardboardXRLoader::Initialize()
+///          from C# code, before the display subsystem starts. Android only;
+///          it does nothing elsewhere.
+void CardboardUnity_setReprojection(bool enabled);
 
 #ifdef __cplusplus
 }

@@ -244,6 +244,8 @@ GLuint CreateProgram(const char* vertex, const char* fragment) {
 namespace XRRendering {
     extern int g_full_width;
     extern int g_full_height;
+    extern int g_texture_width;
+    extern int g_texture_height;
     extern float g_eye_internal_scale;
     extern float g_sharpening_value;
 }
@@ -479,9 +481,10 @@ class OpenGlEs3DistortionRenderer : public DistortionRenderer {
       const int small_width  = static_cast<int>(XRRendering::g_full_width * XRRendering::g_eye_internal_scale);
       const int small_height = static_cast<int>(XRRendering::g_full_height * XRRendering::g_eye_internal_scale);
 
+      // AVN: The part of the texture that holds the eye (see g_texture_width).
       glUniform2f(uniform_scale_,
-                  static_cast<float>(small_width) / static_cast<float>(XRRendering::g_full_width),
-                  static_cast<float>(small_height) / static_cast<float>(XRRendering::g_full_height));
+                  static_cast<float>(small_width) / static_cast<float>(XRRendering::g_texture_width),
+                  static_cast<float>(small_height) / static_cast<float>(XRRendering::g_texture_height));
 
       glUniform2f(uniform_texel_size_,
                   1.0f / static_cast<float>(small_width),

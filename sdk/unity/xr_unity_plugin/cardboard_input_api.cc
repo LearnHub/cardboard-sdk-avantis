@@ -15,6 +15,10 @@
  */
 #include "unity/xr_unity_plugin/cardboard_input_api.h"
 
+#ifdef __ANDROID__
+#include "unity/android/reprojection.h"
+#endif
+
 #include <atomic>
 #include <cstdint>
 
@@ -66,11 +70,23 @@ std::atomic<bool> CardboardInputApi::head_tracker_recenter_requested_(false);
 
 std::atomic<int> CardboardInputApi::new_lowpass_filter_cutoff_frequency_(0);
 
+CardboardInputApi::~CardboardInputApi() {
+#ifdef __ANDROID__
+  // AVN: The reprojection must stop reading the head tracker before it goes.
+  reprojection::SetHeadTracker(nullptr);
+#endif
+}
+
 void CardboardInputApi::InitHeadTracker() {
   if (head_tracker_ == nullptr) {
     head_tracker_.reset(CardboardHeadTracker_create());
   }
   CardboardHeadTracker_resume(head_tracker_.get());
+#ifdef __ANDROID__
+  // AVN: The reprojection reads the head tracker again at display time.
+  reprojection::SetViewportOrientation(selected_viewport_orientation_);
+  reprojection::SetHeadTracker(head_tracker_.get());
+#endif
 }
 
 void CardboardInputApi::PauseHeadTracker() {
@@ -127,6 +143,9 @@ void CardboardInputApi::GetHeadTrackerPose(float* position,
 void CardboardInputApi::SetViewportOrientation(
     CardboardViewportOrientation viewport_orientation) {
   selected_viewport_orientation_ = viewport_orientation;
+#ifdef __ANDROID__
+  reprojection::SetViewportOrientation(viewport_orientation);
+#endif
 }
 
 void CardboardInputApi::SetHeadTrackerRecenterRequested() {

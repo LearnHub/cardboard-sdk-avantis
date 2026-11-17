@@ -49,7 +49,9 @@ android {
                     'java_utils/android/java',
                     '../java_api/src/main/java',
                     // AVN: ClassView capture source for the ClassVR Config app
-                    'classview/android/java'
+                    'classview/android/java',
+                    // AVN: Overlay surface for the Unity plug-in's reprojection
+                    'reprojection/android/java'
             ]
             aidl.srcDirs = ['classview/android/aidl']
             res.srcDirs = [

@@ -29,6 +29,7 @@
 
 #ifdef __ANDROID__
 #include "unity/android/classview_capture.h"
+#include "unity/android/reprojection.h"
 #endif
 
 // @def Logs to Unity XR Trace interface @p message.
@@ -44,6 +45,11 @@ namespace XRRendering {
     float g_sharpening_value = 0.0f;
     int g_full_width = 0;
     int g_full_height = 0;
+    // AVN: Size in pixels of the texture each eye is rendered into. The eye
+    // fills the whole texture when the textures are allocated at the scaled
+    // size, and only the corner at its origin when they are full size.
+    int g_texture_width = 0;
+    int g_texture_height = 0;
     bool g_isSRGB = false;
 
     static inline int ScaleDim(int v, float s)
@@ -174,11 +180,54 @@ class CardboardDisplayProvider {
       return kUnitySubsystemErrorCodeFailure;
     }
     cardboard_display_api_->RunRenderingPreProcessing();
-    cardboard_display_api_->RenderEyesToDisplay();
+    // AVN: While the reprojection is presenting, the eyes reach the display
+    // through its overlay and nothing is drawn to Unity's own surface.
+    if (!SubmitReprojectionFrame()) {
+      cardboard_display_api_->RenderEyesToDisplay();
+    }
     //cardboard_display_api_->RenderWidgets(); // NOT required
     cardboard_display_api_->RunRenderingPostProcessing(); // Vulkan uses this
     SubmitClassViewCapture();
     return kUnitySubsystemErrorCodeSuccess;
+  }
+
+  /// @brief AVN: Hands the frame just rendered to the reprojection, when it is
+  ///        switched on. OpenGL ES 3 on Android only.
+  /// @return true when the reprojection is presenting, so that the caller
+  ///         must not draw the eyes to the display itself.
+  bool SubmitReprojectionFrame() {
+#ifdef __ANDROID__
+    if (!cardboard_display_api_->IsReprojecting()) {
+      return false;
+    }
+    const int eye_width = static_cast<int>(XRRendering::g_full_width *
+                                           XRRendering::g_eye_internal_scale);
+    const int eye_height = static_cast<int>(XRRendering::g_full_height *
+                                            XRRendering::g_eye_internal_scale);
+    if (eye_width <= 0 || eye_height <= 0 ||
+        XRRendering::g_texture_width <= 0 ||
+        XRRendering::g_texture_height <= 0) {
+      return false;
+    }
+    cardboard::unity::reprojection::Frame frame;
+    frame.set = cardboard_display_api_->GetTextureSet();
+    frame.textures[0] = static_cast<uint32_t>(
+        cardboard_display_api_->GetLeftTextureColorBufferId());
+    frame.textures[1] = static_cast<uint32_t>(
+        cardboard_display_api_->GetRightTextureColorBufferId());
+    frame.is_texture_array = is_single_pass_frame_;
+    frame.used_u = static_cast<float>(eye_width) /
+                   static_cast<float>(XRRendering::g_texture_width);
+    frame.used_v = static_cast<float>(eye_height) /
+                   static_cast<float>(XRRendering::g_texture_height);
+    frame.width = eye_width;
+    frame.height = eye_height;
+    frame.sharpen = XRRendering::g_sharpening_value;
+    cardboard::unity::reprojection::SubmitFrame(frame);
+    return cardboard::unity::reprojection::IsPresenting();
+#else
+    return false;
+#endif
   }
 
   /// @brief AVN: Gives the frame just drawn to the ClassView capture, which
@@ -190,13 +239,15 @@ class CardboardDisplayProvider {
         CardboardGraphicsApi::kOpenGlEs3) {
       return;
     }
-    // The eye is rendered into the corner of a full-size texture; these match
+    // The eye may be rendered into the corner of a larger texture; these match
     // the distortion renderer's u_Scale.
     const int eye_width = static_cast<int>(XRRendering::g_full_width *
                                            XRRendering::g_eye_internal_scale);
     const int eye_height = static_cast<int>(XRRendering::g_full_height *
                                             XRRendering::g_eye_internal_scale);
-    if (eye_width <= 0 || eye_height <= 0) {
+    if (eye_width <= 0 || eye_height <= 0 ||
+        XRRendering::g_texture_width <= 0 ||
+        XRRendering::g_texture_height <= 0) {
       return;
     }
     cardboard::unity::classview::EyeFrame frame;
@@ -204,9 +255,9 @@ class CardboardDisplayProvider {
         cardboard_display_api_->GetLeftTextureColorBufferId());
     frame.is_texture_array = is_single_pass_frame_;
     frame.used_u = static_cast<float>(eye_width) /
-                   static_cast<float>(XRRendering::g_full_width);
+                   static_cast<float>(XRRendering::g_texture_width);
     frame.used_v = static_cast<float>(eye_height) /
-                   static_cast<float>(XRRendering::g_full_height);
+                   static_cast<float>(XRRendering::g_texture_height);
     frame.width = eye_width;
     frame.height = eye_height;
     cardboard::unity::classview::OnFrameSubmitted(frame);
@@ -284,6 +335,9 @@ class CardboardDisplayProvider {
             texture_descriptors_[0].depthFormat        = kUnityXRDepthTextureFormat24bitOrGreater;
             texture_descriptors_[0].flags              = 0; // or SRGB/UV origin flags if needed
         }
+
+        // AVN: When reprojecting, draw into a set of textures that is free.
+        cardboard_display_api_->AdvanceTextureSet();
 
         // --- Create/bind the stereo array texture ---
         const uint64_t tex_color_id = cardboard_display_api_->GetLeftTextureColorBufferId();
@@ -375,6 +429,9 @@ class CardboardDisplayProvider {
       }
     }
 
+    // AVN: When reprojecting, draw into a set of textures that is free.
+    cardboard_display_api_->AdvanceTextureSet();
+
     // Setup render passes + texture ids for eye textures and layers.
     for (size_t i = 0; i < texture_descriptors_.size(); ++i)
     {
@@ -453,6 +510,7 @@ class CardboardDisplayProvider {
   UnitySubsystemErrorCode GfxThread_Stop() {
 #ifdef __ANDROID__
     cardboard::unity::classview::OnRenderingStopped();
+    cardboard::unity::reprojection::OnRenderingStopped();
 #endif
     cardboard_display_api_.reset();
     is_initialized_ = false;

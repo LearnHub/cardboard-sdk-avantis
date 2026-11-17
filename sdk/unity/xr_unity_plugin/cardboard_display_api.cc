@@ -19,6 +19,7 @@
 #include <unistd.h>
 
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstring>
@@ -64,10 +65,16 @@ void NSLog(CFStringRef format, ...);
 #define LOGF(...)
 #endif
 
+#ifdef __ANDROID__
+#include "unity/android/reprojection.h"
+#endif
+
 namespace XRRendering {
     extern bool is_single_pass;
     extern float g_eye_internal_scale ;
     extern float g_sharpening_value;
+    extern int g_texture_width;
+    extern int g_texture_height;
 }
 
 namespace cardboard::unity {
@@ -211,7 +218,37 @@ void CardboardDisplayApi::UpdateDeviceParams(bool isSinglePass)
   CardboardLensDistortion_getFieldOfView(lens_distortion, CardboardEye::kRight,
                                          eye_data_[CardboardEye::kRight].fov);
 
+#ifdef __ANDROID__
+  // AVN: The reprojection draws the lens meshes itself, on its own thread.
+  if (IsReprojecting()) {
+    for (const CardboardEye eye : {CardboardEye::kLeft, CardboardEye::kRight}) {
+      reprojection::SetLens(eye, eye_data_[eye].distortion_mesh,
+                            eye_data_[eye].fov);
+    }
+    reprojection::SetViewport(
+        screen_params_.viewport_x, screen_params_.viewport_y,
+        screen_params_.viewport_width, screen_params_.viewport_height);
+  }
+#endif
+
   CardboardLensDistortion_destroy(lens_distortion);
+}
+
+void CardboardDisplayApi::AdvanceTextureSet() {
+#ifdef __ANDROID__
+  if (IsReprojecting()) {
+    SelectTextureSet(reprojection::AcquireSet());
+  }
+#endif
+}
+
+void CardboardDisplayApi::SelectTextureSet(int set) {
+  texture_set_ = set;
+  render_textures_ = texture_sets_[set];
+  eye_data_[CardboardEye::kLeft].texture.texture =
+      render_textures_[CardboardEye::kLeft].color_buffer;
+  eye_data_[CardboardEye::kRight].texture.texture =
+      render_textures_[CardboardEye::kRight].color_buffer;
 }
 
 void CardboardDisplayApi::GetEyeMatrices(int eye, float* eye_from_head,
@@ -324,76 +361,106 @@ void CardboardDisplayApi::RenderingResourcesSetup(bool isSinglePass)
         return;
     }
 
-    if (render_textures_[0].color_buffer != 0) {
+    if (texture_set_count_ != 0) {
         RenderingResourcesTeardown();
     }
 
-    // SPI path (GLES3+): single Texture2DArray for color + depth, 2 layers (L/R)
-    if (selected_graphics_api_ == kOpenGlEs3 && isSinglePass)
+    // AVN: One set of eye textures, or several for the reprojection to hold
+    // one on the display while Unity draws into another.
+    int set_count = 1;
+#ifdef __ANDROID__
+    if (selected_graphics_api_ == kOpenGlEs3 && reprojection::IsEnabled()) {
+        set_count = reprojection::kSwapChainDepth;
+    }
+#endif
+    // Size of the textures, as the renderer takes it: both eyes side by side.
+    // AVN: Several sets at the full size of the screen would take several
+    // times the memory, so when reprojecting they are only as large as Unity
+    // will draw into, which is the same pixels in less.
+    int textures_width = screen_params_.viewport_width;
+    int textures_height = screen_params_.viewport_height;
+    if (set_count > 1) {
+        textures_width = 2 * std::max(1, static_cast<int>(
+            (textures_width / 2) * XRRendering::g_eye_internal_scale));
+        textures_height = std::max(1, static_cast<int>(
+            textures_height * XRRendering::g_eye_internal_scale));
+    }
+    XRRendering::g_texture_width = textures_width / 2;
+    XRRendering::g_texture_height = textures_height;
+
+    const bool is_texture_array = selected_graphics_api_ == kOpenGlEs3 && isSinglePass;
+    LOGD("%s Rendering - Initialized (%d set(s) of eye textures)",
+         is_texture_array ? "Single Pass" : "Multi Pass", set_count);
+
+    for (int set = 0; set < set_count; ++set)
     {
-        LOGD("Single Pass Rendering - Initialized");
-        // IMPORTANT: CreateRenderTextureArray should allocate with per-eye size:
-        // layer_count = 2
-        renderer_->CreateRenderTextureArray(&render_textures_[CardboardEye::kLeft],
-                                            screen_params_.viewport_width,
-                                            screen_params_.viewport_height,
-                                            2);
-
-        // Alias right eye to the same array handles (color + depth)
-        render_textures_[CardboardEye::kRight].color_buffer = render_textures_[CardboardEye::kLeft].color_buffer;
-        render_textures_[CardboardEye::kRight].depth_buffer = render_textures_[CardboardEye::kLeft].depth_buffer;
-
-        // We don't care about those 2D widgets for phones
-        //renderer_->SetupWidgets();
-
-        // Both eyes reference the same texture array; layer is selected at FBO bind (or in instanced draw)
-        for (int eye = 0; eye < CardboardEye::kMax; ++eye)
+        auto& textures = texture_sets_[set];
+        if (is_texture_array)
         {
-            eye_data_[eye].texture.texture  = render_textures_[CardboardEye::kLeft].color_buffer;
-            eye_data_[eye].texture.left_u   = 0;
-            eye_data_[eye].texture.right_u  = 1;
-            eye_data_[eye].texture.top_v    = 1;
-            eye_data_[eye].texture.bottom_v = 0;
+            // SPI path (GLES3+): single Texture2DArray for color + depth, 2 layers (L/R)
+            // IMPORTANT: CreateRenderTextureArray should allocate with per-eye size:
+            // layer_count = 2
+            renderer_->CreateRenderTextureArray(&textures[CardboardEye::kLeft],
+                                                textures_width,
+                                                textures_height,
+                                                2);
+
+            // Alias right eye to the same array handles (color + depth)
+            textures[CardboardEye::kRight] = textures[CardboardEye::kLeft];
+        }
+        else
+        {
+            // Original multi-pass fallback (e.g., ES2)
+            renderer_->CreateRenderTexture(&textures[CardboardEye::kLeft],
+                                           textures_width, textures_height);
+            renderer_->CreateRenderTexture(&textures[CardboardEye::kRight],
+                                           textures_width, textures_height);
         }
     }
-    else //if(isSinglePass == false)
-    {
-        LOGD("Multi Pass Rendering - Initialized");
-        // Original multi-pass fallback (e.g., ES2)
-        renderer_->CreateRenderTexture(&render_textures_[CardboardEye::kLeft],
-                                       screen_params_.viewport_width,
-                                       screen_params_.viewport_height);
-        renderer_->CreateRenderTexture(&render_textures_[CardboardEye::kRight],
-                                       screen_params_.viewport_width,
-                                       screen_params_.viewport_height);
+    texture_set_count_ = set_count;
+    textures_are_arrays_ = is_texture_array;
+
+    // We don't care about those 2D widgets for phones when single pass
+    if (!is_texture_array) {
         renderer_->SetupWidgets();
-
-        eye_data_[CardboardEye::kLeft].texture.texture =
-                render_textures_[CardboardEye::kLeft].color_buffer;
-        eye_data_[CardboardEye::kLeft].texture.left_u = 0;
-        eye_data_[CardboardEye::kLeft].texture.right_u = 1;
-        eye_data_[CardboardEye::kLeft].texture.top_v = 1;
-        eye_data_[CardboardEye::kLeft].texture.bottom_v = 0;
-
-        eye_data_[CardboardEye::kRight].texture.texture =
-                render_textures_[CardboardEye::kRight].color_buffer;
-        eye_data_[CardboardEye::kRight].texture.left_u = 0;
-        eye_data_[CardboardEye::kRight].texture.right_u = 1;
-        eye_data_[CardboardEye::kRight].texture.top_v = 1;
-        eye_data_[CardboardEye::kRight].texture.bottom_v = 0;
     }
+
+    // Both eyes reference the same texture array when single pass; the layer
+    // is selected at FBO bind (or in instanced draw)
+    for (int eye = 0; eye < CardboardEye::kMax; ++eye)
+    {
+        eye_data_[eye].texture.left_u   = 0;
+        eye_data_[eye].texture.right_u  = 1;
+        eye_data_[eye].texture.top_v    = 1;
+        eye_data_[eye].texture.bottom_v = 0;
+    }
+    SelectTextureSet(0);
 }
 //---------------------------------------------------------------------------
 
 void CardboardDisplayApi::RenderingResourcesTeardown() {
-    if (render_textures_[0].color_buffer == 0) return;
+    if (texture_set_count_ == 0) return;
 
-    renderer_->DestroyRenderTexture(&render_textures_[CardboardEye::kLeft]);
-
-    // Right eye aliases the array in single-pass — don’t destroy twice
-    if (!(selected_graphics_api_ == kOpenGlEs3 && XRRendering::is_single_pass)) {
-        renderer_->DestroyRenderTexture(&render_textures_[CardboardEye::kRight]);
+#ifdef __ANDROID__
+    // AVN: The reprojection must not show anything from textures that are going.
+    if (IsReprojecting()) {
+        reprojection::ForgetFrames();
     }
+#endif
+
+    for (int set = 0; set < texture_set_count_; ++set)
+    {
+        auto& textures = texture_sets_[set];
+        renderer_->DestroyRenderTexture(&textures[CardboardEye::kLeft]);
+        // Right eye aliases the array in single-pass — don’t destroy twice
+        if (!textures_are_arrays_) {
+            renderer_->DestroyRenderTexture(&textures[CardboardEye::kRight]);
+        }
+        textures[CardboardEye::kLeft] = {};
+        textures[CardboardEye::kRight] = {};
+    }
+    texture_set_count_ = 0;
+    texture_set_ = 0;
 
     renderer_->TeardownWidgets();
     render_textures_[CardboardEye::kLeft] = {};
@@ -470,6 +537,12 @@ void CardboardUnity_setGraphicsApi(CardboardGraphicsApi graphics_api) {
           "nor Metal nor Vulkan was selected.");
   }
 }
+void CardboardUnity_setReprojection(bool enabled) {
+#ifdef __ANDROID__
+  cardboard::unity::reprojection::SetRequested(enabled);
+#endif
+}
+
 void CardboardUnity_setRenderParams(bool isSpi, float scale, float sharpening)
 {
     XRRendering::is_single_pass = isSpi;

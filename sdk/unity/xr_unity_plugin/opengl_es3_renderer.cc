@@ -328,11 +328,6 @@ class OpenGlEs3Renderer : public Renderer {
         CHECKGLERROR("Create texture array color buffer.");
         render_texture->color_buffer = tex;
 
-        // --- Create depth buffer as a layered renderbuffer ---
-        GLuint depth = 0;
-        glGenRenderbuffers(1, &depth);
-        glBindRenderbuffer(GL_RENDERBUFFER, depth);
-
         // --- Depth: GL_TEXTURE_2D_ARRAY with 'layer_count' slices ---
         // We can't make a "layered renderbuffer" in ES3, so we use a depth texture array.
         GLuint depth_tex = 0;
@@ -347,7 +342,7 @@ class OpenGlEs3Renderer : public Renderer {
         glTexImage3D(GL_TEXTURE_2D_ARRAY,
                      0,
                      GL_DEPTH_COMPONENT16, // match original depth precision
-                     width,
+                     width / 2,            // AVN: per eye, as the color buffer is
                      height,
                      layer_count,
                      0,
@@ -357,13 +352,22 @@ class OpenGlEs3Renderer : public Renderer {
 
         CHECKGLERROR("Create texture array depth buffer.");
         render_texture->depth_buffer = depth_tex;
+        render_texture->depth_is_texture = true;
     }
   //---------------------------------------------------------------------------
 
   void DestroyRenderTexture(RenderTexture* render_texture) override {
+    // AVN: The depth buffer of a texture array is itself a texture. Deleting
+    // it as a renderbuffer left it allocated, and deleted whichever
+    // renderbuffer happened to have the same name.
     GLuint tmp = static_cast<GLuint>(render_texture->depth_buffer);
-    glDeleteRenderbuffers(1, &tmp);
+    if (render_texture->depth_is_texture) {
+      glDeleteTextures(1, &tmp);
+    } else {
+      glDeleteRenderbuffers(1, &tmp);
+    }
     render_texture->depth_buffer = 0;
+    render_texture->depth_is_texture = false;
 
     tmp = static_cast<GLuint>(render_texture->color_buffer);
     glDeleteTextures(1, &tmp);

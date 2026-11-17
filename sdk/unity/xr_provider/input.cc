@@ -18,6 +18,9 @@
 #include <array>
 #include <cmath>
 
+#ifdef __ANDROID__
+#include "unity/android/reprojection.h"
+#endif
 #include "unity/xr_provider/load.h"
 #include "unity/xr_provider/math_tools.h"
 #include "unity/xr_unity_plugin/cardboard_input_api.h"
@@ -57,8 +60,8 @@ class CardboardInputProvider {
     UnityXRInputProvider input_provider;
     input_provider.userData = nullptr;
     input_provider.Tick = [](UnitySubsystemHandle, void*,
-                             UnityXRInputUpdateType) {
-      return GetInstance()->Tick();
+                             UnityXRInputUpdateType update_type) {
+      return GetInstance()->Tick(update_type);
     };
     input_provider.FillDeviceDefinition =
         [](UnitySubsystemHandle, void*, UnityXRInternalInputDeviceId device_id,
@@ -129,14 +132,25 @@ class CardboardInputProvider {
     cardboard_input_api_->PauseHeadTracker();
   }
 
-  UnitySubsystemErrorCode Tick() {
+  UnitySubsystemErrorCode Tick(UnityXRInputUpdateType update_type) {
     std::array<float, 4> out_orientation;
     std::array<float, 3> out_position;
     cardboard_input_api_->GetHeadTrackerPose(out_position.data(),
                                              out_orientation.data());
+#ifdef __ANDROID__
+    // AVN: The reprojection needs the orientation each frame is rendered with.
+    const bool self_test = cardboard::unity::reprojection::OnHeadPose(
+        out_orientation.data(),
+        update_type == kUnityXRInputUpdateTypeBeforeRender);
+#else
+    const bool self_test = false;
+#endif
     // TODO(b/151817737): Compute pose position within SDK with custom rotation.
     head_pose_ =
         cardboard::unity::CardboardRotationToUnityPose(out_orientation);
+    if (self_test) {
+      head_pose_.position = UnityXRVector3{0.0f, 0.0f, 0.0f};
+    }
     return kUnitySubsystemErrorCodeSuccess;
   }
 

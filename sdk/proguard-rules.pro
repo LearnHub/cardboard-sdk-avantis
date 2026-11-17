@@ -14,3 +14,6 @@
 # its AIDL interfaces are called by the ClassVR Config app.
 -keep class avn.cardboard.classview.ClassViewFrameSource { *; }
 -keep class avn.config.capture.** { *; }
+
+# AVN: The reprojection overlay is called from native code by name and has native methods.
+-keep class avn.cardboard.reprojection.ReprojectionSurface { *; }

@@ -30,7 +30,7 @@ namespace cardboard::unity {
 class CardboardInputApi {
  public:
   CardboardInputApi() = default;
-  ~CardboardInputApi() = default;
+  ~CardboardInputApi();
 
   /// @brief Initializes and resumes the HeadTracker module.
   /// @pre Requires a prior call to @c Cardboard_initializeAndroid on Android

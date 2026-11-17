@@ -75,6 +75,10 @@ class Renderer {
     ///     ES 3.x, this field holds a GLuint variable. When using Metal, this
     ///     field is unused.
     uint64_t depth_buffer = 0;
+    /// @brief AVN: Whether depth_buffer names a texture (the two-layer array
+    ///     of single-pass rendering) and not a renderbuffer. OpenGL ES 3.x
+    ///     only.
+    bool depth_is_texture = false;
   };
 
   virtual ~Renderer() = default;
