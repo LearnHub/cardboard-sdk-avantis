@@ -47,8 +47,11 @@ android {
                     'device_params/android/java',
                     'screen_params/android/java',
                     'java_utils/android/java',
-                    '../java_api/src/main/java'
+                    '../java_api/src/main/java',
+                    // AVN: ClassView capture source for the ClassVR Config app
+                    'classview/android/java'
             ]
+            aidl.srcDirs = ['classview/android/aidl']
             res.srcDirs = [
                     'qrcode/android/res',
                     '../java_api/src/main/res'
@@ -60,6 +63,11 @@ android {
         main.proto.includes = ["cardboard_device.proto"]
     }
     namespace = 'com.google.cardboard.sdk'
+
+    // AVN: The ClassView capture source talks to the ClassVR Config app over AIDL
+    buildFeatures {
+        aidl = true
+    }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

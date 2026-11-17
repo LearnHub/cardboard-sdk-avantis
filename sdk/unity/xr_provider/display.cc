@@ -27,6 +27,10 @@
 #include "IUnityXRTrace.h"
 #include "UnitySubsystemTypes.h"
 
+#ifdef __ANDROID__
+#include "unity/android/classview_capture.h"
+#endif
+
 // @def Logs to Unity XR Trace interface @p message.
 #define CARDBOARD_DISPLAY_XR_TRACE_LOG(trace, message, ...)          \
   XR_TRACE_LOG(trace, "[CardboardXrDisplayProvider]: " message "\n", \
@@ -173,7 +177,40 @@ class CardboardDisplayProvider {
     cardboard_display_api_->RenderEyesToDisplay();
     //cardboard_display_api_->RenderWidgets(); // NOT required
     cardboard_display_api_->RunRenderingPostProcessing(); // Vulkan uses this
+    SubmitClassViewCapture();
     return kUnitySubsystemErrorCodeSuccess;
+  }
+
+  /// @brief AVN: Gives the frame just drawn to the ClassView capture, which
+  ///        draws the left eye into the ClassVR Config app's Surface when a
+  ///        capture is running. OpenGL ES 3 on Android only.
+  void SubmitClassViewCapture() {
+#ifdef __ANDROID__
+    if (cardboard::unity::CardboardDisplayApi::GetGraphicsApi() !=
+        CardboardGraphicsApi::kOpenGlEs3) {
+      return;
+    }
+    // The eye is rendered into the corner of a full-size texture; these match
+    // the distortion renderer's u_Scale.
+    const int eye_width = static_cast<int>(XRRendering::g_full_width *
+                                           XRRendering::g_eye_internal_scale);
+    const int eye_height = static_cast<int>(XRRendering::g_full_height *
+                                            XRRendering::g_eye_internal_scale);
+    if (eye_width <= 0 || eye_height <= 0) {
+      return;
+    }
+    cardboard::unity::classview::EyeFrame frame;
+    frame.texture = static_cast<uint32_t>(
+        cardboard_display_api_->GetLeftTextureColorBufferId());
+    frame.is_texture_array = is_single_pass_frame_;
+    frame.used_u = static_cast<float>(eye_width) /
+                   static_cast<float>(XRRendering::g_full_width);
+    frame.used_v = static_cast<float>(eye_height) /
+                   static_cast<float>(XRRendering::g_full_height);
+    frame.width = eye_width;
+    frame.height = eye_height;
+    cardboard::unity::classview::OnFrameSubmitted(frame);
+#endif
   }
 
     UnitySubsystemErrorCode GfxThread_PopulateNextFrameDesc(
@@ -193,6 +230,7 @@ class CardboardDisplayProvider {
                 once_sp_ = true;
                 once_mp_ = false;
             }
+            is_single_pass_frame_ = true;
             return GfxThread_PopulateNextFrameDesc_SinglePass(frame_hints, next_frame);
         }
         else
@@ -204,6 +242,7 @@ class CardboardDisplayProvider {
                 once_mp_ = true;
                 once_sp_ = false;
             }
+            is_single_pass_frame_ = false;
             return GfxThread_PopulateNextFrameDesc_MultiPass(frame_hints, next_frame);
         }
     }
@@ -412,6 +451,9 @@ class CardboardDisplayProvider {
 
 
   UnitySubsystemErrorCode GfxThread_Stop() {
+#ifdef __ANDROID__
+    cardboard::unity::classview::OnRenderingStopped();
+#endif
     cardboard_display_api_.reset();
     is_initialized_ = false;
     return kUnitySubsystemErrorCodeSuccess;
@@ -454,6 +496,10 @@ class CardboardDisplayProvider {
   /// @brief Tracks Cardboard API initialization status. It is set to true once
   /// the CardboardDisplayApi::UpdateDeviceParams() is called and returns true.
   bool is_initialized_ = false;
+
+  /// @brief AVN: Whether the frame being rendered is a single-pass one, with
+  ///        both eyes in one texture array.
+  bool is_single_pass_frame_ = false;
 
   /// @brief Screen width in pixels.
   int width_;

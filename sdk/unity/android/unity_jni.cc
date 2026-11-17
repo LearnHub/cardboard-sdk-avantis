@@ -17,6 +17,7 @@
 
 #include "include/cardboard.h"
 #include "jni_utils/android/jni_utils.h"
+#include "unity/android/classview_capture.h"
 
 namespace {
 JavaVM* vm_ = nullptr;
@@ -43,5 +44,7 @@ void CardboardUnity_initializeAndroid(jobject context) {
   JNIEnv* env = nullptr;
   cardboard::jni::LoadJNIEnv(vm_, &env);
   Cardboard_initializeAndroid(vm_, env->NewGlobalRef(context));
+  // AVN: Offer this app to the ClassVR Config app as a ClassView capture source.
+  cardboard::unity::classview::InitializeAndroid(vm_, context);
 }
 }
