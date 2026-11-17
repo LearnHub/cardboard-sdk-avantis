@@ -50,11 +50,25 @@ android {
         main.proto.includes = ["cardboard_device.proto"]
     }
     namespace 'com.google.cardboard.sdk'
+}
 
-    libraryVariants.all { variant ->
-        variant.outputs.all {
-            outputFileName = "GfxPluginCardboard.aar"
+// AVN: Copies the release AAR into the Avantis Cardboard XR Plugin for Unity under the name the
+// plug-in expects. The plug-in is assumed to be checked out next to this repository; override
+// with -PunityPluginDir=<path>.
+tasks.register('copyAarToUnityPlugin') {
+    dependsOn 'assembleRelease'
+    doLast {
+        def pluginDir = file(project.findProperty('unityPluginDir') ?: "${project.rootDir}/../cardboard-xr-plugin-avantis")
+        def targetDir = new File(pluginDir, 'Runtime/Android')
+        if (!targetDir.isDirectory()) {
+            throw new GradleException("Cardboard XR Plugin not found at ${pluginDir}; pass -PunityPluginDir=<path>")
         }
+        copy {
+            from layout.buildDirectory.file('outputs/aar/sdk-release.aar')
+            into targetDir
+            rename { 'GfxPluginCardboard.aar' }
+        }
+        logger.lifecycle("Copied sdk-release.aar to ${targetDir}/GfxPluginCardboard.aar")
     }
 }
 
