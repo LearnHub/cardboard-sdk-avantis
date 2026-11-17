@@ -113,8 +113,14 @@ HelloCardboardApp::HelloCardboardApp(JavaVM* vm, jobject obj,
 
 HelloCardboardApp::~HelloCardboardApp() {
   CardboardHeadTracker_destroy(head_tracker_);
-  CardboardLensDistortion_destroy(lens_distortion_);
-  CardboardDistortionRenderer_destroy(distortion_renderer_);
+  // AVN: These are still null if the app is destroyed before its first GL
+  // setup, and the SDK logs an error when asked to destroy a null object.
+  if (lens_distortion_ != nullptr) {
+    CardboardLensDistortion_destroy(lens_distortion_);
+  }
+  if (distortion_renderer_ != nullptr) {
+    CardboardDistortionRenderer_destroy(distortion_renderer_);
+  }
 }
 
 void HelloCardboardApp::OnSurfaceCreated(JNIEnv* env) {
@@ -266,7 +272,11 @@ bool HelloCardboardApp::UpdateDeviceParams() {
     return false;
   }
 
-  CardboardLensDistortion_destroy(lens_distortion_);
+  // AVN: Null on the first setup; the SDK logs an error when asked to destroy
+  // a null object.
+  if (lens_distortion_ != nullptr) {
+    CardboardLensDistortion_destroy(lens_distortion_);
+  }
   lens_distortion_ = CardboardLensDistortion_create(buffer, size, screen_width_,
                                                     screen_height_);
 
@@ -274,7 +284,9 @@ bool HelloCardboardApp::UpdateDeviceParams() {
 
   GlSetup();
 
-  CardboardDistortionRenderer_destroy(distortion_renderer_);
+  if (distortion_renderer_ != nullptr) {
+    CardboardDistortionRenderer_destroy(distortion_renderer_);
+  }
   const CardboardOpenGlEsDistortionRendererConfig config{kGlTexture2D};
   distortion_renderer_ = CardboardOpenGlEs2DistortionRenderer_create(&config);
 
