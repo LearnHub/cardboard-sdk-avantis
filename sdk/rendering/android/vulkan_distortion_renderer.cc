@@ -568,8 +568,10 @@ class VulkanDistortionRenderer : public DistortionRenderer {
     PushConstantsObject push_constants{
             .left_u   = eye_description->left_u,
             .right_u  = static_cast<float>(small_width) / static_cast<float>(XRRendering::g_full_width),
-            .top_v    = static_cast<float>(small_height) / static_cast<float>(XRRendering::g_full_height),
-            .bottom_v = eye_description->bottom_v,
+            // Top and bottom are swapped to match the texture coordinates
+            // (upstream v1.32.0, paired with the flipped viewport below).
+            .top_v    = eye_description->bottom_v,
+            .bottom_v = static_cast<float>(small_height) / static_cast<float>(XRRendering::g_full_height),
             .scale_x = static_cast<float>(small_width) / static_cast<float>(XRRendering::g_full_width),
             .scale_y =static_cast<float>(small_height) / static_cast<float>(XRRendering::g_full_height),
             .texel_x = 1.0f / static_cast<float>(small_width),
@@ -632,10 +634,12 @@ class VulkanDistortionRenderer : public DistortionRenderer {
     vkUpdateDescriptorSets(logical_device_, 1, descriptor_writes, 0, nullptr);
 
     // Update Viewport and scissor
+    // Swap the height to make the viewport bottom-left origin as expected by
+    // the distortion mesh.
     VkViewport viewport = {.x = static_cast<float>(x),
-                           .y = static_cast<float>(y),
+                           .y = static_cast<float>(y + height),
                            .width = static_cast<float>(width),
-                           .height = static_cast<float>(height),
+                           .height = -static_cast<float>(height),
                            .minDepth = 0.0,
                            .maxDepth = 1.0};
 

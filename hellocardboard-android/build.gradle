@@ -1,9 +1,9 @@
 apply plugin: 'com.android.application'
 
 android {
-    compileSdk 35
+    compileSdk = 35
     lintOptions {
-        abortOnError false
+        abortOnError = false
     }
     defaultConfig {
         applicationId "com.google.cardboard.hellocardboard"
@@ -15,10 +15,10 @@ android {
         // Vulkan        - Requires 24 or higher
         //
         // See the release notes for details.
-        minSdkVersion 26
-        targetSdkVersion 35
+        minSdkVersion = 26
+        targetSdkVersion = 35
         versionCode 1
-        versionName "1.30.0"
+        versionName "1.36.0"
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
         ndk {
             abiFilters 'armeabi-v7a', 'arm64-v8a'
@@ -36,7 +36,12 @@ android {
     externalNativeBuild.cmake {
         path "CMakeLists.txt"
     }
-    namespace 'com.google.cardboard'
+    namespace = 'com.google.cardboard'
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
 }
 
 dependencies {
@@ -52,8 +57,9 @@ dependencies {
 
 // The dependencies for NDK builds live inside the .aar files so they need to
 // be extracted before NDK targets can link against.
-task extractNdk(type: Copy)  {
-    if (file("${project.rootDir}/sdk/build/outputs/aar/sdk-release.aar").exists()) {
+task extractNdk {
+    dependsOn ':sdk:assembleRelease'
+    doLast {
         copy {
             from zipTree("${project.rootDir}/sdk/build/outputs/aar/sdk-release.aar")
             into "libraries/"
@@ -71,5 +77,5 @@ task deleteNdk(type: Delete) {
     delete "libraries/cardboard.h"
 }
 
-build.dependsOn(extractNdk)
+preBuild.dependsOn(extractNdk)
 clean.dependsOn(deleteNdk)

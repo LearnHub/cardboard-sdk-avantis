@@ -137,9 +137,6 @@ VkSwapchainKHR VkSwapchainCache::swapchain_ = VK_NULL_HANDLE;
 int VkSwapchainCache::version_ = 0;
 
 PFN_vkGetInstanceProcAddr Orig_GetInstanceProcAddr;
-PFN_vkCreateSwapchainKHR Orig_vkCreateSwapchainKHR;
-PFN_vkDestroySwapchainKHR Orig_vkDestroySwapchainKHR;
-PFN_vkAcquireNextImageKHR Orig_vkAcquireNextImageKHR;
 uint32_t image_index;
 
 /**
@@ -185,20 +182,14 @@ static VKAPI_ATTR void VKAPI_CALL Hook_vkAcquireNextImageKHR(
 PFN_vkVoidFunction VKAPI_PTR MyGetInstanceProcAddr(VkInstance instance,
                                                    const char* pName) {
   if (strcmp(pName, "vkCreateSwapchainKHR") == 0) {
-    Orig_vkCreateSwapchainKHR =
-        (PFN_vkCreateSwapchainKHR)Orig_GetInstanceProcAddr(instance, pName);
     return (PFN_vkVoidFunction)&Hook_vkCreateSwapchainKHR;
   }
 
   if (strcmp(pName, "vkDestroySwapchainKHR") == 0) {
-    Orig_vkDestroySwapchainKHR =
-        (PFN_vkDestroySwapchainKHR)Orig_GetInstanceProcAddr(instance, pName);
     return (PFN_vkVoidFunction)&Hook_vkDestroySwapchainKHR;
   }
 
   if (strcmp(pName, "vkAcquireNextImageKHR") == 0) {
-    Orig_vkAcquireNextImageKHR =
-        (PFN_vkAcquireNextImageKHR)Orig_GetInstanceProcAddr(instance, pName);
     return (PFN_vkVoidFunction)&Hook_vkAcquireNextImageKHR;
   }
 
@@ -367,6 +358,7 @@ class VulkanRenderer : public Renderer {
     const VkRenderPassCreateInfo render_pass_create_info{
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
         .pNext = nullptr,
+        .flags = 0,
         .attachmentCount = 1,
         .pAttachments = &attachment_descriptions,
         .subpassCount = 1,
