@@ -102,6 +102,7 @@ uniform mat3 u_Rotation;
 // Tangents of the eye buffer's half angles: left, right, bottom, top.
 uniform vec4 u_TanFov;
 out highp vec2 v_TexCoords;
+out highp float v_Fade;
 void main() {
   gl_Position = vec4(a_Position, 0.0, 1.0);
   // The lens mesh's texture coordinates run evenly across the eye buffer's
@@ -111,11 +112,19 @@ void main() {
   vec3 ray = u_Rotation * vec3(mix(low, high, a_TexCoords), -1.0);
   vec2 tan_angle = ray.xy / max(-ray.z, 0.0001);
   v_TexCoords = (tan_angle - low) / (high - low);
+  // Beyond the edge of the eye buffer there is nothing rendered to show. As
+  // the ClassVR client's own reprojection does, carry the edge's colour on
+  // outwards and fade it to black over half the eye buffer's width again,
+  // which reads as a soft vignette where a hard black edge would catch the
+  // eye.
+  vec2 from_centre = abs(v_TexCoords * 2.0 - 1.0);
+  v_Fade = clamp(2.0 - max(from_centre.x, from_centre.y), 0.0, 1.0);
 })glsl";
 
 // The fragment shaders: a header that defines SAMPLE(uv) to read the eye
-// buffer, then this body. It is the distortion pass's scale and sharpen, then
-// black wherever the turned ray has left the eye buffer.
+// buffer, then this body. It is the distortion pass's scale and sharpen, with
+// the picture's edge carried outwards and faded where the turned ray has left
+// the eye buffer.
 constexpr char kFragmentHeaderArray[] = R"glsl(#version 300 es
 precision mediump float;
 precision mediump sampler2DArray;
@@ -136,10 +145,13 @@ uniform vec2 u_TexelSize;  // 1 / size of that part in pixels
 uniform float u_Sharpen;
 uniform float u_Gamma;
 in highp vec2 v_TexCoords;
+in highp float v_Fade;
 out vec4 o_Color;
 void main() {
-  highp vec2 inside = step(vec2(0.0), v_TexCoords) * step(v_TexCoords, vec2(1.0));
-  highp vec2 coords = v_TexCoords * u_Scale;
+  // Held half a texel inside the eye, so that outside it the edge repeats
+  // and nothing from the unused part of a larger texture is sampled.
+  highp vec2 coords =
+      clamp(v_TexCoords, 0.5 * u_TexelSize, 1.0 - 0.5 * u_TexelSize) * u_Scale;
   vec3 c = SAMPLE(coords);
   if (u_Sharpen > 0.0) {
     highp vec2 offset = vec2(0.75 * u_TexelSize.x, 0.0);
@@ -150,7 +162,7 @@ void main() {
   if (u_Gamma != 1.0) {
     c = pow(c, vec3(u_Gamma));
   }
-  o_Color = vec4(c * inside.x * inside.y, 1.0);
+  o_Color = vec4(c * v_Fade, 1.0);
 })glsl";
 
 struct Program {
