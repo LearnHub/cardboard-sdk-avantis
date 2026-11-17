@@ -24,7 +24,10 @@ android {
             abiFilters 'armeabi-v7a', 'arm64-v8a'
         }
         externalNativeBuild.cmake {
-            arguments "-DANDROID_STL=c++_shared"
+            // AVN: ClassVR firmware lists libc++_shared.so as a public system
+            // library, so its old system copy is loaded instead of the one in
+            // the APK and the app fails to load. Link the STL statically.
+            arguments "-DANDROID_STL=c++_static"
         }
     }
     buildTypes {
