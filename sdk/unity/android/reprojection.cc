@@ -86,10 +86,11 @@ constexpr char kJavaClass[] = "avn/cardboard/reprojection/ReprojectionSurface";
 constexpr char kTestProperty[] = "debug.avn.reprojection.test";
 
 // How far ahead of a refresh's start the head is predicted. The frame drawn in
-// one refresh is latched by the compositor at the next and scanned out over the
-// one after, so the middle of the picture reaches the eye about two and a half
-// refreshes on.
-constexpr double kPredictionRefreshes = 2.5;
+// one refresh is latched by the compositor at the next and starts to scan out
+// at the one after, two refreshes on (see Warp::DrawRefresh for keeping it
+// so). The panel then takes a while longer to show it: on a CVR355128 a wearer
+// found 45 ms right, so the light arrives about 19 ms after scan-out begins.
+constexpr double kPredictionRefreshes = 3.25;
 
 constexpr int64_t kNanosPerSecond = 1000000000;
 
@@ -463,6 +464,10 @@ class Warp {
       return;
     }
     if (context_ != EGL_NO_CONTEXT && eglGetCurrentContext() == context_) {
+      if (last_draw_fence_ != nullptr) {
+        glDeleteSync(last_draw_fence_);
+        last_draw_fence_ = nullptr;
+      }
       glDeleteProgram(program_array_.id);
       glDeleteProgram(program_2d_.id);
       glDeleteVertexArrays(2, vertex_arrays_);
@@ -486,6 +491,28 @@ class Warp {
   bool DrawRefresh() {
     const int64_t start = ClockNanos(CLOCK_MONOTONIC);
     NoteInterval(start);
+
+    // If the last refresh's draw is still on the GPU at this vsync, it has
+    // missed the compositor's latch and is still queued. The only buffer free
+    // to draw into is then the one leaving the panel, which the GPU must wait
+    // for, so this draw would miss the next latch too, and every refresh from
+    // here on would reach the panel a refresh later than it needs to: three
+    // refreshes from queue to panel instead of two. Skipping one refresh lets
+    // the queue empty and the pipeline settle back. Seen on a CVR355128 in most
+    // starts and after the screen comes back on; one skip puts it right, and it
+    // stays right however slowly Unity renders. Never twice running, so that a
+    // draw that is simply slow cannot halve the refresh rate.
+    if (last_draw_fence_ != nullptr) {
+      if (!skipped_last_ &&
+          glClientWaitSync(last_draw_fence_, 0, 0) == GL_TIMEOUT_EXPIRED) {
+        skipped_last_ = true;
+        ++skipped_refreshes_;
+        return true;
+      }
+      glDeleteSync(last_draw_fence_);
+      last_draw_fence_ = nullptr;
+    }
+    skipped_last_ = false;
 
     float display_orientation[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     const int test_mode = test_mode_;
@@ -532,6 +559,7 @@ class Warp {
       }
     }
 
+    last_draw_fence_ = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
     if (!eglSwapBuffers(display_, surface_)) {
       CARDBOARD_LOGE("Reprojection: overlay lost (0x%x)", eglGetError());
       return false;
@@ -692,11 +720,13 @@ class Warp {
     } else if (now - report_start_nanos_ >= 5 * kNanosPerSecond) {
       const double seconds = (now - report_start_nanos_) * 1e-9;
       CARDBOARD_LOGI(
-          "Reprojection: %.1f refreshes/s (%d late), %.1f new frames/s, %d "
-          "refreshes waited on the GPU, slowest draw %.1f ms",
-          refreshes_ / seconds, late_refreshes_, new_frames_ / seconds,
-          refreshes_waiting_, max_draw_nanos_ * 1e-6);
+          "Reprojection: %.1f refreshes/s (%d late, %d skipped to catch up), "
+          "%.1f new frames/s, %d refreshes waited on the GPU, slowest draw "
+          "%.1f ms",
+          refreshes_ / seconds, late_refreshes_, skipped_refreshes_,
+          new_frames_ / seconds, refreshes_waiting_, max_draw_nanos_ * 1e-6);
       report_start_nanos_ = now;
+      skipped_refreshes_ = 0;
       refreshes_ = 0;
       late_refreshes_ = 0;
       new_frames_ = 0;
@@ -720,6 +750,10 @@ class Warp {
   GLsizei index_counts_[2] = {0, 0};
   float tan_fov_[2][4] = {{1.0f, 1.0f, 1.0f, 1.0f}, {1.0f, 1.0f, 1.0f, 1.0f}};
 
+  // The last refresh's draw, to tell whether it made the compositor's latch
+  GLsync last_draw_fence_ = nullptr;
+  bool skipped_last_ = false;
+
   // Statistics
   int64_t last_refresh_nanos_ = 0;
   int64_t report_start_nanos_ = 0;
@@ -728,6 +762,7 @@ class Warp {
   int late_refreshes_ = 0;
   int new_frames_ = 0;
   int refreshes_waiting_ = 0;
+  int skipped_refreshes_ = 0;
   uint64_t last_serial_ = 0;
 };
 
