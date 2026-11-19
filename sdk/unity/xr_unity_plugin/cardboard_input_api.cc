@@ -206,6 +206,32 @@ void CardboardUnity_setViewportOrientation(
 
 void CardboardUnity_recenterHeadTracker() {
   cardboard::unity::CardboardInputApi::SetHeadTrackerRecenterRequested();
+#ifdef __ANDROID__
+  // AVN: Facing forwards again means undoing the tilt-to-spin turn as well.
+  cardboard::unity::reprojection::ResetTiltToSpin();
+#endif
+}
+
+void CardboardUnity_setTiltToSpin(bool enabled, float threshold_radians,
+                                  float radians_per_second) {
+#ifdef __ANDROID__
+  cardboard::unity::reprojection::SetTiltToSpin(enabled, threshold_radians,
+                                                radians_per_second);
+#endif
+}
+
+void CardboardUnity_resetTiltToSpin() {
+#ifdef __ANDROID__
+  cardboard::unity::reprojection::ResetTiltToSpin();
+#endif
+}
+
+float CardboardUnity_getTiltToSpinYaw() {
+#ifdef __ANDROID__
+  return cardboard::unity::reprojection::GetTiltToSpinYaw();
+#else
+  return 0.0f;
+#endif
 }
 
 void CardboardUnity_setHeadTrackerLowPassFilter(

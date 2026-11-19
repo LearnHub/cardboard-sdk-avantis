@@ -110,8 +110,24 @@ extern "C" {
 void CardboardUnity_setViewportOrientation(
     CardboardViewportOrientation viewport_orientation);
 
-/// @brief Flags a head tracker recentering request.
+/// @brief Flags a head tracker recentering request. Also undoes the
+///        tilt-to-spin turn.
 void CardboardUnity_recenterHeadTracker();
+
+/// @brief Switches tilt-to-spin on or off (Android only). See
+///        cardboard::unity::reprojection::SetTiltToSpin.
+/// @param enabled Whether tilting the head turns the viewer.
+/// @param threshold_radians How far the head tilts before the turn starts.
+/// @param radians_per_second Top speed of the turn.
+void CardboardUnity_setTiltToSpin(bool enabled, float threshold_radians,
+                                  float radians_per_second);
+
+/// @brief Undoes the tilt-to-spin turn.
+void CardboardUnity_resetTiltToSpin();
+
+/// @brief How far tilt-to-spin has turned the viewer to their right, in
+///        radians within [-pi, pi].
+float CardboardUnity_getTiltToSpinYaw();
 
 /// @brief Resets the head tracker with a low pass filter to stabilize the pose.
 void CardboardUnity_setHeadTrackerLowPassFilter(

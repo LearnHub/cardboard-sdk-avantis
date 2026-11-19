@@ -388,6 +388,118 @@ bool ReadDisplayOrientation(float* orientation) {
   return true;
 }
 
+// Tilt-to-spin. spin_mutex_ covers all of it.
+//
+// The turn is kept here, not in Unity, so that it can advance on every refresh
+// of the panel and be reprojected like a turn of the head: a turn that Unity
+// applied to a rig of its own would only move on with each of Unity's frames.
+// It is a rotation about the vertical of the head tracker's space, applied to
+// every orientation that leaves here: the one Unity renders with, which is
+// stored with the frame, and the one each refresh is drawn for. The warp's
+// difference between the two then takes in the turn with no more said.
+std::mutex spin_mutex_;
+bool spin_enabled_ = false;
+// Sine of the tilt at which the turn starts, and its top speed.
+double spin_threshold_ = 0.24740395925452294;  // sin(0.25)
+double spin_speed_ = 4.0;  // radians a second
+// How far the viewer has been turned to their right, in radians.
+double spin_angle_ = 0.0;
+// How fast it was turning when last advanced, radians a second.
+double spin_rate_ = 0.0;
+// When it was last advanced (CLOCK_MONOTONIC), or 0.
+int64_t spin_time_ = 0;
+// When Unity last took a pose to render with, and its frame time since.
+int64_t spin_render_time_ = 0;
+double spin_frame_seconds_ = 0.0;
+
+// Longest gap the turn is carried across: no turning through a pause.
+constexpr double kSpinLongestStepSeconds = 0.25;
+// Furthest ahead the turn is predicted for a frame Unity is about to render.
+constexpr double kSpinLongestAheadSeconds = 0.1;
+
+// How fast a head at @p orientation (as the head tracker gives it: the
+// rotation from its space to the head's) turns the viewer, in radians a
+// second, to the right when positive. As avn.input.TiltToSwivel in the ClassVR
+// client: nothing inside the dead zone, faster the further the head is tilted
+// towards a shoulder, and slower when looking up or down, which is dizzying.
+double SpinRateLocked(const float* orientation) {
+  float m[9];
+  QuaternionToMatrix(orientation, m);
+  // The second column is the vertical as the head sees it: along its right,
+  // its up and its back.
+  const double sin_roll = std::sin(std::atan2(-m[3], m[4]));
+  const double level = 1.0 - std::min(1.0, std::fabs(static_cast<double>(m[5])));
+  if (sin_roll > spin_threshold_) {
+    return spin_speed_ * level * (sin_roll - spin_threshold_);
+  }
+  if (sin_roll < -spin_threshold_) {
+    return spin_speed_ * level * (sin_roll + spin_threshold_);
+  }
+  return 0.0;
+}
+
+// Carries the turn on to @p now with the head at @p orientation.
+void AdvanceSpinLocked(const float* orientation, int64_t now) {
+  spin_rate_ = spin_enabled_ ? SpinRateLocked(orientation) : 0.0;
+  if (spin_time_ != 0 && now > spin_time_) {
+    const double seconds = (now - spin_time_) * 1e-9;
+    if (seconds <= kSpinLongestStepSeconds) {
+      spin_angle_ = std::remainder(spin_angle_ + spin_rate_ * seconds,
+                                   2.0 * M_PI);
+    }
+  }
+  spin_time_ = now;
+}
+
+// Turns @p orientation by @p angle to the viewer's right about the vertical.
+void TurnOrientation(double angle, float* orientation) {
+  if (angle == 0.0) {
+    return;
+  }
+  const float about_y[4] = {0.0f, static_cast<float>(std::sin(angle / 2)),
+                            0.0f, static_cast<float>(std::cos(angle / 2))};
+  float turned[4];
+  MultiplyQuaternions(orientation, about_y, turned);
+  std::memcpy(orientation, turned, sizeof(turned));
+}
+
+// Adds the turn to an orientation Unity is about to use. The frame will not be
+// seen for a while, and is seen with the turn as it is by then, so it is
+// rendered with the turn as it is expected to be: otherwise the warp would
+// have to make up the difference, and pull black in at the leading edge for
+// as long as the turn lasts. A wrong guess costs only that edge.
+void SpinRenderOrientation(float* orientation, bool before_render) {
+  std::lock_guard<std::mutex> lock(spin_mutex_);
+  const int64_t now = ClockNanos(CLOCK_MONOTONIC);
+  const bool presenting = presenting_;
+  if (!presenting) {
+    // No warp thread to carry the turn on: it moves at Unity's rate.
+    AdvanceSpinLocked(orientation, now);
+  }
+  if (before_render) {
+    if (spin_render_time_ != 0) {
+      spin_frame_seconds_ = (now - spin_render_time_) * 1e-9;
+    }
+    spin_render_time_ = now;
+  }
+  double ahead = 0.0;
+  if (presenting) {
+    // A frame is on the panel from about one of Unity's frame times after
+    // its pose is taken until two.
+    ahead = std::min(kSpinLongestAheadSeconds,
+                     std::max(1.0 / refresh_rate_, 1.5 * spin_frame_seconds_));
+  }
+  TurnOrientation(spin_angle_ + spin_rate_ * ahead, orientation);
+}
+
+// Carries the turn on to the refresh being drawn and adds it to the
+// orientation the refresh is drawn for.
+void SpinDisplayOrientation(float* orientation, int64_t now) {
+  std::lock_guard<std::mutex> lock(spin_mutex_);
+  AdvanceSpinLocked(orientation, now);
+  TurnOrientation(spin_angle_, orientation);
+}
+
 // Forgets the frame waiting to be shown and deletes every fence that is done
 // with. Unity's render thread only, in its context, with the mutex held.
 void DropPendingLocked() {
@@ -582,6 +694,9 @@ class Warp {
     const int test_mode = test_mode_;
     const bool have_orientation =
         test_mode == 0 && ReadDisplayOrientation(display_orientation);
+    if (have_orientation) {
+      SpinDisplayOrientation(display_orientation, start);
+    }
 
     bool drew_frame = false;
     {
@@ -1120,6 +1235,8 @@ bool OnHeadPose(float* orientation, bool before_render) {
   const bool testing = test_mode_ != 0;
   if (testing) {
     TestOrientation(orientation);
+  } else {
+    SpinRenderOrientation(orientation, before_render);
   }
   std::lock_guard<std::mutex> lock(pose_mutex_);
   // The cameras are placed with the pose of the update just before rendering.
@@ -1129,6 +1246,28 @@ bool OnHeadPose(float* orientation, bool before_render) {
   }
   seen_before_render_ = seen_before_render_ || before_render;
   return testing;
+}
+
+void SetTiltToSpin(bool enabled, float threshold_radians,
+                   float radians_per_second) {
+  std::lock_guard<std::mutex> lock(spin_mutex_);
+  spin_enabled_ = enabled;
+  spin_threshold_ = std::sin(
+      std::min(1.5, std::max(0.0, static_cast<double>(threshold_radians))));
+  spin_speed_ = std::max(0.0, static_cast<double>(radians_per_second));
+  if (!enabled) {
+    spin_rate_ = 0.0;
+  }
+}
+
+void ResetTiltToSpin() {
+  std::lock_guard<std::mutex> lock(spin_mutex_);
+  spin_angle_ = 0.0;
+}
+
+float GetTiltToSpinYaw() {
+  std::lock_guard<std::mutex> lock(spin_mutex_);
+  return static_cast<float>(spin_angle_);
 }
 
 void SetLens(CardboardEye eye, const CardboardMesh& mesh, const float* fov,

@@ -81,8 +81,29 @@ void SetHeadTracker(CardboardHeadTracker* head_tracker);
 /// Sets the viewport orientation the head tracker's poses are asked for in.
 void SetViewportOrientation(CardboardViewportOrientation orientation);
 
-/// Notes the orientation Unity is about to render with: the head tracker's
-/// quaternion (x, y, z, w) exactly as CardboardHeadTracker_getPose gave it.
+/// Tilt-to-spin: tilting the head towards a shoulder turns the viewer about
+/// the vertical, for someone who cannot turn round where they sit. The turn is
+/// kept here and added to the orientation OnHeadPose() hands back, so Unity
+/// needs no rig for it, and with reprojection it moves on at the panel's rate
+/// instead of Unity's. It works, at Unity's rate, without reprojection too.
+/// Switching it off stops the turning and keeps the turn made so far.
+/// @param threshold_radians How far the head tilts before the turn starts.
+/// @param radians_per_second Top speed of the turn.
+/// Any thread.
+void SetTiltToSpin(bool enabled, float threshold_radians,
+                   float radians_per_second);
+
+/// Puts the viewer back to facing the way the head tracker says. Any thread.
+void ResetTiltToSpin();
+
+/// How far tilt-to-spin has turned the viewer to their right, in radians
+/// within [-pi, pi]. Any thread.
+float GetTiltToSpinYaw();
+
+/// Notes the orientation Unity is about to render with, and adds the
+/// tilt-to-spin turn to it. Takes the head tracker's quaternion (x, y, z, w)
+/// exactly as CardboardHeadTracker_getPose gave it and gives back the one to
+/// place the cameras with.
 /// Call on Unity's main thread from the input provider.
 /// @param before_render Whether this is Unity's update just before rendering,
 ///        which is the one the cameras use.
