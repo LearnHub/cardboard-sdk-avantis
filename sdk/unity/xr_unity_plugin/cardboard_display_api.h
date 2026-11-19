@@ -386,6 +386,37 @@ void CardboardUnity_setRenderParams(bool isSPI, float scale, float sharpening);
 ///          it does nothing elsewhere.
 void CardboardUnity_setReprojection(bool enabled);
 
+/// @brief Whether the reprojection is drawing the panel now.
+/// @details Only then is a head-locked layer shown; while it is false, the
+///          app should draw whatever the layer held into the scene itself.
+bool CardboardUnity_isReprojectionPresenting();
+
+/// @brief Shows a flat picture fixed to the head, over everything, from the
+///        next frame on: a rectangle straight ahead of the point midway
+///        between the eyes. See cardboard::unity::reprojection::HeadLockedLayer.
+/// @details Call it every frame the picture should show: it goes by itself a
+///          few frames after the last call. Only shown while the reprojection
+///          is presenting. Android with OpenGL ES 3 only.
+///
+/// @param[in]      texture                 Unity's native pointer to a 2D
+///                                         texture.
+/// @param[in]      distance                Metres ahead of the head.
+/// @param[in]      width                   Width of the rectangle in metres.
+/// @param[in]      height                  Height of the rectangle in metres.
+/// @param[in]      red, green, blue, alpha Multiply the picture.
+/// @param[in]      premultiplied_alpha     Whether the texture's colours are
+///                                         already multiplied by its opacity.
+/// @param[in]      linear                  Whether sampling the texture gives
+///                                         linear light (a project in linear
+///                                         colour space).
+void CardboardUnity_setHeadLockedLayer(void* texture, float distance,
+                                       float width, float height, float red,
+                                       float green, float blue, float alpha,
+                                       bool premultiplied_alpha, bool linear);
+
+/// @brief Takes the head-locked layer away from the next frame on.
+void CardboardUnity_clearHeadLockedLayer();
+
 #ifdef __cplusplus
 }
 #endif

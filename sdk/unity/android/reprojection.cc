@@ -166,6 +166,58 @@ void main() {
   o_Color = vec4(c * v_Fade, 1.0);
 })glsl";
 
+// The head-locked layer: the lens mesh again, with the view ray as it is, not
+// turned, carried to where it meets the layer's rectangle.
+constexpr char kLayerVertexShader[] = R"glsl(#version 300 es
+layout (location = 0) in vec2 a_Position;
+layout (location = 1) in vec2 a_TexCoords;
+uniform vec4 u_TanFov;
+// Takes the tangents of a view ray to coordinates in the layer's texture:
+// scale in xy, offset in zw.
+uniform vec4 u_Quad;
+out highp vec2 v_LayerCoords;
+void main() {
+  gl_Position = vec4(a_Position, 0.0, 1.0);
+  vec2 tan_angle = mix(-u_TanFov.xz, u_TanFov.yw, a_TexCoords);
+  v_LayerCoords = tan_angle * u_Quad.xy + u_Quad.zw;
+})glsl";
+
+constexpr char kLayerFragmentShader[] = R"glsl(#version 300 es
+precision mediump float;
+uniform sampler2D u_Texture;
+uniform vec4 u_Tint;
+uniform bool u_Premultiplied;
+uniform bool u_Linear;
+in highp vec2 v_LayerCoords;
+out vec4 o_Color;
+void main() {
+  if (any(lessThan(v_LayerCoords, vec2(0.0))) ||
+      any(greaterThan(v_LayerCoords, vec2(1.0)))) {
+    discard;
+  }
+  vec4 c = texture(u_Texture, v_LayerCoords);
+  vec3 rgb = c.rgb;
+  if (u_Premultiplied) {
+    rgb = c.a > 0.0 ? rgb / c.a : vec3(0.0);
+  }
+  rgb = clamp(rgb, 0.0, 1.0);
+  if (u_Linear) {
+    rgb = pow(rgb, vec3(1.0 / 2.2));
+  }
+  float alpha = clamp(c.a * u_Tint.a, 0.0, 1.0);
+  o_Color = vec4(rgb * u_Tint.rgb * alpha, alpha);
+})glsl";
+
+struct LayerProgram {
+  GLuint id = 0;
+  GLint tan_fov = -1;
+  GLint quad = -1;
+  GLint texture = -1;
+  GLint tint = -1;
+  GLint premultiplied = -1;
+  GLint linear = -1;
+};
+
 struct Program {
   GLuint id = 0;
   GLint rotation = -1;
@@ -183,6 +235,8 @@ struct Lens {
   std::vector<float> uvs;
   std::vector<int> indices;
   float tan_fov[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+  // Where the middle of the head is from the eye, across and up, in metres.
+  float head_offset[2] = {0.0f, 0.0f};
   // Set when the copy above is newer than the warp thread's buffers.
   bool changed = false;
 };
@@ -197,6 +251,9 @@ struct Slot {
   GLsync fence = nullptr;
   // Counts the frames submitted, to tell one from the next.
   uint64_t serial = 0;
+  // The head-locked layer to draw over the frame, if any.
+  bool has_layer = false;
+  HeadLockedLayer layer = {};
 };
 
 std::mutex control_mutex_;
@@ -227,6 +284,11 @@ bool unity_surface_is_srgb_ = false;
 
 // The overlay
 ANativeWindow* window_ = nullptr;
+
+// The head-locked layer Unity last asked for, and how many frames ago.
+bool layer_set_ = false;
+HeadLockedLayer layer_ = {};
+int layer_age_ = 0;
 
 // Frames
 Slot displayed_;
@@ -432,7 +494,8 @@ class Warp {
     eglQuerySurface(display_, surface_, EGL_HEIGHT, &height_);
 
     if (!CreateProgram(&program_array_, kFragmentHeaderArray) ||
-        !CreateProgram(&program_2d_, kFragmentHeader2D)) {
+        !CreateProgram(&program_2d_, kFragmentHeader2D) ||
+        !CreateLayerProgram()) {
       Stop();
       return false;
     }
@@ -470,6 +533,7 @@ class Warp {
       }
       glDeleteProgram(program_array_.id);
       glDeleteProgram(program_2d_.id);
+      glDeleteProgram(program_layer_.id);
       glDeleteVertexArrays(2, vertex_arrays_);
       glDeleteBuffers(2, vertex_buffers_);
       glDeleteBuffers(2, uv_buffers_);
@@ -551,6 +615,9 @@ class Warp {
           QuaternionToMatrix(delta, rotation);
         }
         DrawEyesLocked(displayed_.frame, rotation);
+        if (displayed_.has_layer) {
+          DrawLayerLocked(displayed_.layer);
+        }
         drew_frame = true;
         if (displayed_.serial != last_serial_) {
           last_serial_ = displayed_.serial;
@@ -589,16 +656,15 @@ class Warp {
     return shader;
   }
 
-  static bool CreateProgram(Program* program, const char* fragment_header) {
-    const std::string fragment_source =
-        std::string(fragment_header) + kFragmentBody;
-    const GLuint vertex = CompileShader(GL_VERTEX_SHADER, kVertexShader);
-    const GLuint fragment =
-        CompileShader(GL_FRAGMENT_SHADER, fragment_source.c_str());
+  // Compiles and links a program. Zero if it cannot be made.
+  static GLuint LinkProgram(const char* vertex_source,
+                            const char* fragment_source) {
+    const GLuint vertex = CompileShader(GL_VERTEX_SHADER, vertex_source);
+    const GLuint fragment = CompileShader(GL_FRAGMENT_SHADER, fragment_source);
     if (vertex == 0 || fragment == 0) {
       glDeleteShader(vertex);
       glDeleteShader(fragment);
-      return false;
+      return 0;
     }
     const GLuint id = glCreateProgram();
     glAttachShader(id, vertex);
@@ -611,6 +677,31 @@ class Warp {
     if (linked != GL_TRUE) {
       CARDBOARD_LOGE("Reprojection: program failed to link");
       glDeleteProgram(id);
+      return 0;
+    }
+    return id;
+  }
+
+  bool CreateLayerProgram() {
+    const GLuint id = LinkProgram(kLayerVertexShader, kLayerFragmentShader);
+    if (id == 0) {
+      return false;
+    }
+    program_layer_.id = id;
+    program_layer_.tan_fov = glGetUniformLocation(id, "u_TanFov");
+    program_layer_.quad = glGetUniformLocation(id, "u_Quad");
+    program_layer_.texture = glGetUniformLocation(id, "u_Texture");
+    program_layer_.tint = glGetUniformLocation(id, "u_Tint");
+    program_layer_.premultiplied = glGetUniformLocation(id, "u_Premultiplied");
+    program_layer_.linear = glGetUniformLocation(id, "u_Linear");
+    return true;
+  }
+
+  static bool CreateProgram(Program* program, const char* fragment_header) {
+    const std::string fragment_source =
+        std::string(fragment_header) + kFragmentBody;
+    const GLuint id = LinkProgram(kVertexShader, fragment_source.c_str());
+    if (id == 0) {
       return false;
     }
     program->id = id;
@@ -667,6 +758,115 @@ class Warp {
       index_counts_[eye] = static_cast<GLsizei>(lens.indices.size());
       std::memcpy(tan_fov_[eye], lens.tan_fov, sizeof(tan_fov_[eye]));
     }
+  }
+
+  // The rectangle of the window, in pixels, that the layer covers in an eye:
+  // every triangle of the lens mesh that the layer touches. False if none.
+  bool LayerScissorLocked(int eye, const float* quad, GLint* box) const {
+    const Lens& lens = lenses_[eye];
+    const float low[2] = {-lens.tan_fov[0], -lens.tan_fov[2]};
+    const float high[2] = {lens.tan_fov[1], lens.tan_fov[3]};
+    const size_t count = lens.indices.size();
+    float min_x = 2.0f, min_y = 2.0f, max_x = -2.0f, max_y = -2.0f;
+    for (size_t i = 0; i + 2 < count; ++i) {
+      // The mesh is a triangle strip: each index with the two after it.
+      float u_min = 2.0f, v_min = 2.0f, u_max = -1.0f, v_max = -1.0f;
+      for (size_t corner = 0; corner < 3; ++corner) {
+        const size_t vertex = static_cast<size_t>(lens.indices[i + corner]);
+        const float tan_x =
+            low[0] + (high[0] - low[0]) * lens.uvs[vertex * 2];
+        const float tan_y =
+            low[1] + (high[1] - low[1]) * lens.uvs[vertex * 2 + 1];
+        const float u = tan_x * quad[0] + quad[2];
+        const float v = tan_y * quad[1] + quad[3];
+        u_min = std::min(u_min, u);
+        u_max = std::max(u_max, u);
+        v_min = std::min(v_min, v);
+        v_max = std::max(v_max, v);
+      }
+      if (u_max < 0.0f || u_min > 1.0f || v_max < 0.0f || v_min > 1.0f) {
+        continue;
+      }
+      for (size_t corner = 0; corner < 3; ++corner) {
+        const size_t vertex = static_cast<size_t>(lens.indices[i + corner]);
+        min_x = std::min(min_x, lens.vertices[vertex * 2]);
+        max_x = std::max(max_x, lens.vertices[vertex * 2]);
+        min_y = std::min(min_y, lens.vertices[vertex * 2 + 1]);
+        max_y = std::max(max_y, lens.vertices[vertex * 2 + 1]);
+      }
+    }
+    if (min_x > max_x || min_y > max_y) {
+      return false;
+    }
+    GLint view[4] = {viewport_[0], viewport_[1], viewport_[2], viewport_[3]};
+    if (view[2] <= 0 || view[3] <= 0) {
+      view[0] = 0;
+      view[1] = 0;
+      view[2] = width_;
+      view[3] = height_;
+    }
+    const float left = view[0] + (min_x * 0.5f + 0.5f) * view[2];
+    const float right = view[0] + (max_x * 0.5f + 0.5f) * view[2];
+    const float bottom = view[1] + (min_y * 0.5f + 0.5f) * view[3];
+    const float top = view[1] + (max_y * 0.5f + 0.5f) * view[3];
+    box[0] = static_cast<GLint>(std::floor(left)) - 1;
+    box[1] = static_cast<GLint>(std::floor(bottom)) - 1;
+    box[2] = static_cast<GLint>(std::ceil(right)) + 1 - box[0];
+    box[3] = static_cast<GLint>(std::ceil(top)) + 1 - box[1];
+    return true;
+  }
+
+  // Draws the head-locked layer over both eyes. It is not turned with the
+  // head: wherever the head is by now, the layer is straight ahead of it.
+  void DrawLayerLocked(const HeadLockedLayer& layer) {
+    if (layer.distance <= 0.0f || layer.width <= 0.0f ||
+        layer.height <= 0.0f || layer.tint[3] <= 0.0f ||
+        glIsTexture(layer.texture) != GL_TRUE) {
+      return;
+    }
+    glActiveTexture(GL_TEXTURE0);
+    for (int i = 0; i < 8 && glGetError() != GL_NO_ERROR; ++i) {
+    }
+    glBindTexture(GL_TEXTURE_2D, layer.texture);
+    if (glGetError() != GL_NO_ERROR) {
+      // Not a 2D texture: the name has gone to something else.
+      glBindTexture(GL_TEXTURE_2D, 0);
+      return;
+    }
+
+    glUseProgram(program_layer_.id);
+    glUniform1i(program_layer_.texture, 0);
+    glUniform4fv(program_layer_.tint, 1, layer.tint);
+    glUniform1i(program_layer_.premultiplied, layer.premultiplied_alpha ? 1 : 0);
+    glUniform1i(program_layer_.linear, layer.linear ? 1 : 0);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    glEnable(GL_SCISSOR_TEST);
+    for (int eye = 0; eye < 2; ++eye) {
+      // A view ray with tangents t meets the layer's plane at t * distance
+      // in the eye's space. The middle of the head, which the rectangle is
+      // centred on, is at head_offset there, and the texture runs from one
+      // edge of the rectangle to the other.
+      const Lens& lens = lenses_[eye];
+      const float quad[4] = {
+          layer.distance / layer.width, layer.distance / layer.height,
+          0.5f - lens.head_offset[0] / layer.width,
+          0.5f - lens.head_offset[1] / layer.height};
+      GLint box[4];
+      if (!LayerScissorLocked(eye, quad, box)) {
+        continue;
+      }
+      glScissor(box[0], box[1], box[2], box[3]);
+      glUniform4fv(program_layer_.quad, 1, quad);
+      glUniform4fv(program_layer_.tan_fov, 1, tan_fov_[eye]);
+      glBindVertexArray(vertex_arrays_[eye]);
+      glDrawElements(GL_TRIANGLE_STRIP, index_counts_[eye], GL_UNSIGNED_INT,
+                     nullptr);
+    }
+    glBindVertexArray(0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_BLEND);
   }
 
   void DrawEyesLocked(const Frame& frame, const float* rotation) {
@@ -743,6 +943,7 @@ class Warp {
 
   Program program_array_;
   Program program_2d_;
+  LayerProgram program_layer_;
   GLuint vertex_arrays_[2] = {0, 0};
   GLuint vertex_buffers_[2] = {0, 0};
   GLuint uv_buffers_[2] = {0, 0};
@@ -930,9 +1131,13 @@ bool OnHeadPose(float* orientation, bool before_render) {
   return testing;
 }
 
-void SetLens(CardboardEye eye, const CardboardMesh& mesh, const float* fov) {
+void SetLens(CardboardEye eye, const CardboardMesh& mesh, const float* fov,
+             const float* eye_from_head) {
   std::lock_guard<std::mutex> lock(mutex_);
   Lens& lens = lenses_[eye];
+  // The matrix's translation is where the head's middle is in eye space.
+  lens.head_offset[0] = eye_from_head[12];
+  lens.head_offset[1] = eye_from_head[13];
   lens.vertices.assign(mesh.vertices, mesh.vertices + mesh.n_vertices * 2);
   lens.uvs.assign(mesh.uvs, mesh.uvs + mesh.n_vertices * 2);
   lens.indices.assign(mesh.indices, mesh.indices + mesh.n_indices);
@@ -940,6 +1145,18 @@ void SetLens(CardboardEye eye, const CardboardMesh& mesh, const float* fov) {
     lens.tan_fov[i] = std::abs(std::tan(fov[i]));
   }
   lens.changed = true;
+}
+
+void SetHeadLockedLayer(const HeadLockedLayer& layer) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  layer_ = layer;
+  layer_set_ = true;
+  layer_age_ = 0;
+}
+
+void ClearHeadLockedLayer() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  layer_set_ = false;
 }
 
 void SetViewport(int x, int y, int width, int height) {
@@ -1027,6 +1244,15 @@ void SubmitFrame(const Frame& frame) {
     pending_.valid = true;
     pending_.serial = ++frame_serial_;
     pending_.frame = frame;
+    // The layer goes with the frame, so that a texture drawn for it this
+    // frame is finished, as the frame is, before either is shown. Unity's
+    // main thread sets it up to a frame ahead of this thread, so it is kept
+    // for a few frames, not taken once.
+    if (layer_set_ && ++layer_age_ > kHeadLockedLayerFrames) {
+      layer_set_ = false;
+    }
+    pending_.has_layer = layer_set_;
+    pending_.layer = layer_;
     pending_.fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
     {
       std::lock_guard<std::mutex> pose_lock(pose_mutex_);

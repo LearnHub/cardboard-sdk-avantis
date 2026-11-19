@@ -95,7 +95,48 @@ bool OnHeadPose(float* orientation, bool before_render);
 /// Copies the lens mesh and field of view of an eye. Call on Unity's render
 /// thread whenever the device parameters are loaded.
 /// @param fov [left, right, bottom, top] half angles in radians.
-void SetLens(CardboardEye eye, const CardboardMesh& mesh, const float* fov);
+/// @param eye_from_head The eye's 4x4 column-major matrix from head space,
+///        for where the eye sits (see HeadLockedLayer).
+void SetLens(CardboardEye eye, const CardboardMesh& mesh, const float* fov,
+             const float* eye_from_head);
+
+/// A flat picture fixed to the head: a rectangle straight ahead of the point
+/// midway between the eyes, facing it. What Unity draws into the eye buffers
+/// is turned with the head between Unity's frames, so anything meant to stay
+/// in the middle of the view, a reticle above all, shakes when Unity is slow.
+/// This is drawn after that turn, at the panel's rate, and over everything.
+/// Each eye sees it from where that eye sits, so it appears at its distance.
+/// It is OpenXR's quad layer in view space, with one layer and no pose.
+struct HeadLockedLayer {
+  /// Name of a GL_TEXTURE_2D in Unity's context. It is read from the frame
+  /// after this is set onwards; a picture that changes should be drawn into a
+  /// different texture each time, not over the one being shown.
+  uint32_t texture;
+  /// How far ahead the rectangle is, and its size, in metres.
+  float distance;
+  float width;
+  float height;
+  /// Multiplies the picture: red, green, blue and opacity.
+  float tint[4];
+  /// Whether the colours are already multiplied by the opacity, as they are
+  /// in a texture a camera has rendered over transparent black.
+  bool premultiplied_alpha;
+  /// Whether sampling gives linear light, as in a Unity project in linear
+  /// colour space, to be encoded for the panel here.
+  bool linear;
+};
+
+/// Shows @p layer from Unity's next frame on. It must be set again at least
+/// every few frames (kHeadLockedLayerFrames) or it goes, so that it cannot
+/// outlive an app that has stopped drawing it. Any thread.
+void SetHeadLockedLayer(const HeadLockedLayer& layer);
+
+/// Takes the layer away from Unity's next frame on. Call before the texture
+/// is destroyed. Any thread.
+void ClearHeadLockedLayer();
+
+/// How many of Unity's frames a layer lasts without being set again.
+constexpr int kHeadLockedLayerFrames = 3;
 
 /// Sets the rectangle of the screen that the lens meshes cover, in pixels.
 void SetViewport(int x, int y, int width, int height);

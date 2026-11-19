@@ -223,7 +223,8 @@ void CardboardDisplayApi::UpdateDeviceParams(bool isSinglePass)
   if (IsReprojecting()) {
     for (const CardboardEye eye : {CardboardEye::kLeft, CardboardEye::kRight}) {
       reprojection::SetLens(eye, eye_data_[eye].distortion_mesh,
-                            eye_data_[eye].fov);
+                            eye_data_[eye].fov,
+                            eye_data_[eye].eye_from_head_matrix);
     }
     reprojection::SetViewport(
         screen_params_.viewport_x, screen_params_.viewport_y,
@@ -540,6 +541,41 @@ void CardboardUnity_setGraphicsApi(CardboardGraphicsApi graphics_api) {
 void CardboardUnity_setReprojection(bool enabled) {
 #ifdef __ANDROID__
   cardboard::unity::reprojection::SetRequested(enabled);
+#endif
+}
+
+bool CardboardUnity_isReprojectionPresenting() {
+#ifdef __ANDROID__
+  return cardboard::unity::reprojection::IsPresenting();
+#else
+  return false;
+#endif
+}
+
+void CardboardUnity_setHeadLockedLayer(void* texture, float distance,
+                                       float width, float height, float red,
+                                       float green, float blue, float alpha,
+                                       bool premultiplied_alpha, bool linear) {
+#ifdef __ANDROID__
+  cardboard::unity::reprojection::HeadLockedLayer layer = {};
+  // Under OpenGL ES, Unity's native texture pointer is the texture's name.
+  layer.texture = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(texture));
+  layer.distance = distance;
+  layer.width = width;
+  layer.height = height;
+  layer.tint[0] = red;
+  layer.tint[1] = green;
+  layer.tint[2] = blue;
+  layer.tint[3] = alpha;
+  layer.premultiplied_alpha = premultiplied_alpha;
+  layer.linear = linear;
+  cardboard::unity::reprojection::SetHeadLockedLayer(layer);
+#endif
+}
+
+void CardboardUnity_clearHeadLockedLayer() {
+#ifdef __ANDROID__
+  cardboard::unity::reprojection::ClearHeadLockedLayer();
 #endif
 }
 
